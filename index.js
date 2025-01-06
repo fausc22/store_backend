@@ -4,14 +4,14 @@ const session = require('express-session');
 const cors = require('cors'); // Añadido para manejar CORS
 const app = express();
 const axios = require('axios');
-const port = 3001; // Puerto en el que correrá la aplicación
+const port = process.env.PORT || 3001; // Puerto en el que correrá la aplicación
 
 // Importar rutas
 const storeRoutes = require('./routes/storeRoutes');
 const adminRoutes = require('./routes/adminRoutes'); 
 
 // Configurar middleware de CORS
-const allowedOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5174'];
+const allowedOrigins = ['http://localhost:5173', 'http://localhost:5174', 'https://tienda-front-lyart.vercel.app'];
 
 const corsOptions = {
     origin: (origin, callback) => {
@@ -22,7 +22,8 @@ const corsOptions = {
         }
     },
     methods: 'GET,POST,PUT,DELETE',
-    allowedHeaders: 'Content-Type, Authorization'
+    allowedHeaders: 'Content-Type, Authorization',
+    credentials: true
 };
 
 app.use(cors(corsOptions));
