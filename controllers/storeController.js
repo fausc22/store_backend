@@ -6,44 +6,75 @@ const path = require('path');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const { create } = require('domain');
+const multer = require("multer");
 require('dotenv').config();
 
 let IVA = '';  // Cambia const a let para poder reasignar
 const ivaValue = parseInt(process.env.IVA);  // Asegúrate de convertir el valor a número
 
-if (ivaValue === 0) {
-    IVA = 'PRECIO_SIN_IVA';
-} else if (ivaValue === 1) {
-    IVA = 'PRECIO_SIN_IVA_1';
-} else if (ivaValue === 2) {
-    IVA = 'PRECIO_SIN_IVA_2';
-} else if (ivaValue === 3) {
-    IVA = 'PRECIO_SIN_IVA_3';
-} else if (ivaValue === 4) {
-    IVA = 'PRECIO_SIN_IVA_4';
-}
 
 
-//PRIMEROS ARTICULOS DE LA PAGINA HOME
-const articulosOferta = (req, res) => {
+const articulosOferta = (req, res, ivaValue) => {
+    let IVA;
+
+    if (ivaValue === 0) {
+        IVA = 1.21; // Multiplicador para IVA 21%
+    } else if (ivaValue === 1) {
+        IVA = 1.105; // Multiplicador para IVA 10.5%
+    } else if (ivaValue === 2) {
+        IVA = 1.00; // Multiplicador para sin IVA
+    } else {
+        IVA = 1.21; // Valor por defecto si es inválido
+    }
+
     const query = `
-        SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo WHERE art_desc_vta LIKE '%COCA COLA%' LIMIT 8;
+        SELECT 
+            CODIGO_BARRA, 
+            art_desc_vta, 
+            ROUND(SUM(PRECIO * ?), 2) AS PRECIO, 
+            PRECIO_DESC 
+        FROM articulo_temp 
+        WHERE cat = '1' 
+        GROUP BY CODIGO_BARRA, art_desc_vta, PRECIO_DESC;
+
     `;
-    db.query(query, (err, results) => {
+
+    db.query(query, [IVA], (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta:', err);
             res.status(500).send('Error en el servidor');
             return;
         }
         res.json(results);
-        
     });
 };
 
+
+
 //DESTACADOS DE LA PAGINA HOME
-const articulosDestacados = (req, res) => {
-    const query = `SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo WHERE art_desc_vta LIKE '%COCA COLA%' LIMIT 8`;
-    db.query(query, (err, results) => {
+const articulosDestacados = (req, res, ivaValue) => {
+
+    let IVA;
+
+    if (ivaValue === 0) {
+        IVA = 1.21; // Multiplicador para IVA 21%
+    } else if (ivaValue === 1) {
+        IVA = 1.105; // Multiplicador para IVA 10.5%
+    } else if (ivaValue === 2) {
+        IVA = 1.00; // Multiplicador para sin IVA
+    } else {
+        IVA = 1.21; // Valor por defecto si es inválido
+    }
+
+    const query = `SELECT 
+            CODIGO_BARRA, 
+            art_desc_vta, 
+            ROUND(SUM(PRECIO * ?), 2) AS PRECIO, 
+            PRECIO_DESC 
+        FROM articulo_temp 
+        WHERE cat = '2' 
+        GROUP BY CODIGO_BARRA, art_desc_vta, PRECIO_DESC;`;
+    db.query(query, [IVA], (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta:', err);
             res.status(500).send('Error en el servidor');
@@ -55,7 +86,7 @@ const articulosDestacados = (req, res) => {
 
 
 const productosMain = (req, res) => {
-    const query = `SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo LIMIT 16`;
+    const query = `SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, PRECIO, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo LIMIT 16`;
     db.query(query, (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta:', err);
@@ -71,13 +102,13 @@ const productosMain = (req, res) => {
 
 // Ruta para obtener productos por categoría
 const filtradoCategorias = (req, res) => {
-    const categoryId = req.params.categoryId;
+    const categoryName = req.params.categoryId;
     const query = `
-        SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta
-        FROM articulo
-        WHERE COD_DPTO = ? ORDER BY art_desc_vta ASC;
+        select ar.CODIGO_BARRA, ar.COD_INTERNO, ar.COD_IVA, ar.PRECIO, ar.COSTO, ar.porc_impint, ar.COD_DPTO, ar.PESABLE, ar.STOCK, ar.art_desc_vta
+from articulo ar 
+where ar.cod_dpto = (select dat_clasif from clasif where nom_clasif = ? and cod_clasif=1 limit 1) order by ar.art_desc_vta asc;
     `;
-    db.query(query, [categoryId], (err, results) => {
+    db.query(query, [categoryName], (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta:', err);
             res.status(500).send('Error en el servidor');
@@ -92,7 +123,7 @@ const filtradoCategorias = (req, res) => {
 const buscarProductos = (req, res) => {
     const searchTerm = req.query.q;
     const query = `
-        SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta
+        SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, PRECIO, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta
         FROM articulo
         WHERE art_desc_vta LIKE ?;
     `;
@@ -126,7 +157,7 @@ const obtenerCategorias = (req, res) => {
 
 //OBTENER ARTICULOS CHECKOUT
 const articulosCheckout = (req, res) => {
-    const query = `SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, ${IVA}, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo WHERE art_desc_vta LIKE '%COCA COLA%' LIMIT 4`;
+    const query = `SELECT CODIGO_BARRA, COD_INTERNO, COD_IVA, PRECIO, COSTO, porc_impint, COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo WHERE art_desc_vta LIKE '%COCA COLA%' LIMIT 4`;
     db.query(query, (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta:', err);
@@ -367,16 +398,16 @@ const MailPedidoRealizado = async (req, res) => {
 
 
 const insertarPedido = (pedidoData, callback) => {
-    const { cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, medio_pago, estado, notas_local } = pedidoData;
+    const { cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local } = pedidoData;
 
     const insertPedidoQuery = `
         INSERT INTO pedidos 
-        (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, medio_pago, estado, notas_local) 
+        (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local) 
         VALUES 
-        (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    const pedidoValues = [cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, medio_pago, estado, notas_local];
+    const pedidoValues = [cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local];
 
     db.query(insertPedidoQuery, pedidoValues, (err, result) => {
         if (err) {
@@ -409,7 +440,7 @@ const insertarProductos = (pedidoId, productos, callback) => {
 };
 
 const nuevoPedido = (req, res) => {
-    const { cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, medio_pago, estado, notas_local, productos } = req.body;
+    const { cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local, productos } = req.body;
 
     insertarPedido({
         cliente,
@@ -418,6 +449,7 @@ const nuevoPedido = (req, res) => {
         email_cliente,
         cantidad_productos,
         monto_total,
+        costo_envio,
         medio_pago,
         estado,
         notas_local
@@ -437,6 +469,87 @@ const nuevoPedido = (req, res) => {
 
 };
 
+// 📂 Ruta donde se guardan las imágenes
+const publicidadPath = path.join(__dirname, "../resources/publicidad");
+
+// 🔹 Configuración de `multer` para subir imágenes
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, publicidadPath);
+    },
+    filename: function (req, file, cb) {
+        cb(null, file.originalname);
+    },
+});
+
+const upload = multer({ storage });
+
+const getImagenesPublicidad = (req, res) => {
+    fs.readdir(publicidadPath, (err, files) => {
+        if (err) {
+            return res.status(500).json({ error: "No se pueden obtener las imágenes" });
+        }
+        const imagenes = files.map(file => `/publicidad/${file}`); // Construye la URL pública
+        res.json(imagenes);
+    });
+};
+
+const subirImagenPublicidad = (req, res) => {
+    upload.single("imagen")(req, res, (err) => {
+        if (err) {
+            return res.status(500).json({ error: "Error al subir la imagen" });
+        }
+        res.json({ message: "Imagen subida correctamente", url: `/publicidad/${req.file.filename}` });
+    });
+};
+
+const eliminarImagenPublicidad = (req, res) => {
+    const nombreImagen = req.params.nombreImagen;
+    const rutaImagen = path.join(publicidadPath, nombreImagen);
+
+    fs.unlink(rutaImagen, (err) => {
+        if (err) {
+            return res.status(500).json({ error: "No se pudo eliminar la imagen" });
+        }
+        res.json({ message: "Imagen eliminada correctamente" });
+    });
+};
+
+const storageImg = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, path.join(__dirname, "../resources/img_art"));
+    },
+    filename: (req, file, cb) => {
+      const codigo_barra = req.body.codigo_barra;
+      cb(null, `${codigo_barra}${path.extname(file.originalname)}`);
+    }
+  });
+  const uploadImg = multer({ storage: storageImg }).single("imagen");
+
+const verificarImagenArticulo = (req, res) => {
+    const codigo_barra = req.body.codigo_barra;
+    const imagePath = path.join(__dirname, `../resources/img_art/${codigo_barra}.jpg`);
+  
+    fs.access(imagePath, fs.constants.F_OK, (err) => {
+      if (err) {
+        return res.json({ existe: false });
+      }
+      res.json({ existe: true });
+    });
+  };
+
+const subirImagenArticulo = (req, res) => {
+    uploadImg(req, res, (err) => {
+      if (err) {
+        return res.status(500).json({ error: "Error al subir la imagen" });
+      }
+
+      if (!req.body.codigo_barra) {
+        return res.status(400).json({ error: "Código de barra no recibido en el servidor" });
+        }
+      res.json({ mensaje: "Imagen subida correctamente" });
+    });
+  };
 
 
 
@@ -455,5 +568,10 @@ module.exports = {
     createPreference,
     variablesEnv,
     MailPedidoRealizado,
-    nuevoPedido
+    nuevoPedido,
+    getImagenesPublicidad,
+    subirImagenPublicidad,
+    eliminarImagenPublicidad,
+    verificarImagenArticulo,
+    subirImagenArticulo
 };

@@ -35,8 +35,17 @@ app.use(session({
     saveUninitialized: true
 }));
 
+
+
+
 // Configurar middleware para parsear JSON
 app.use(express.json());
+app.use(cors());
+app.use(express.urlencoded({ extended: true }));
+
+// Servir imágenes de la carpeta 'resources/publicidad'
+app.use("/publicidad", express.static("resources/publicidad"));
+
 
 // Usar las rutas importadas
 app.use('/store', storeRoutes);

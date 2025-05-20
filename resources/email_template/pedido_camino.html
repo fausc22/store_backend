@@ -78,6 +78,15 @@ div[style*="margin: 16px 0;"] { margin: 0 !important; }
                         
                     </tr>
                     <tr>
+                        <td align="center" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding-top: 10px;">
+                            <p style="font-size: 20px; font-weight: 400; line-height: 24px; color: #777777;">
+                                El horario aproximado de entrega va a ser entre las <strong>{{horarioInicio}}</strong> HS, y las <strong>{{horarioFin}}</strong> HS.
+                            </p>
+                            
+                        </td>
+                        
+                    </tr>
+                    <tr>
                         <td align="center" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; ">
                             <p style="font-size: 20px; font-weight: 400; line-height: 24px; color: #777777;">Preparate para recibirlo!!</p>
                             
@@ -106,9 +115,9 @@ div[style*="margin: 16px 0;"] { margin: 0 !important; }
                     </tr>
                     <tr>
                         <td align="left" style="padding-top: 20px;">
-                            <p style="font-size: 16px; font-weight: 600; line-height: 24px; color: #333333;">Subtotal: {{subtotal}}</p>
-                            <p style="font-size: 16px; font-weight: 600; line-height: 24px; color: #333333;">Envío: {{shippingCost}}</p>
-                            <p style="font-size: 16px; font-weight: 600; line-height: 24px; color: #333333;">Total: {{total}}</p>
+                            <p style="font-size: 16px; font-weight: 600; line-height: 24px; color: #333333; ">Subtotal: $ {{subtotal}}</p>
+                            <p style="font-size: 16px; font-weight: 600; line-height: 24px; color: #333333; ">Envío: $ {{shippingCost}}</p>
+                            <h4 style="font-size: 20px; font-weight: 800; line-height: 36px; color: #333333; margin: 0; text-align: center;">Total: $ {{total}}</h4>
                         </td>
                     </tr>
                     <tr>

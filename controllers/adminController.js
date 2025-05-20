@@ -8,6 +8,28 @@ const { create } = require('domain');
 const dotenv = require('dotenv');
 
 
+const usernameEnv = process.env.USER_NAME; // Usuario preconfigurado
+const passwordEnv = process.env.PASSWORD; // Contraseña encriptada
+
+const loginCheck = (req, res) => {
+    const { username, password } = req.body;
+
+    // Validar usuario
+    if (username !== usernameEnv) {
+        return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
+    }
+
+    // Validar contraseña
+    if (password !== passwordEnv) {
+        return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
+    }
+
+    
+
+    res.json({ message: 'Login exitoso'});
+};
+
+
 const obtenerConfig = (req, res) => {
     const envPath = path.resolve(__dirname, '../.env');
     const config = dotenv.parse(fs.readFileSync(envPath));
@@ -85,11 +107,12 @@ const pedidosPendientes = (req, res) => {
             telefono_cliente, 
             email_cliente, 
             cantidad_productos, 
-            monto_total, 
+            monto_total,
+            costo_envio, 
             medio_pago, 
             estado,
             notas_local
-        FROM pedidos WHERE estado  = 'PENDIENTE' OR estado  = 'EN proceso' 
+        FROM pedidos WHERE estado  = 'PENDIENTE' OR estado  = 'En proceso' 
         `;
     db.query(query, (err, results) => {
         if (err) {
@@ -111,7 +134,8 @@ const pedidosEntregados = (req, res) => {
             telefono_cliente, 
             email_cliente, 
             cantidad_productos, 
-            monto_total, 
+            monto_total,
+            costo_envio, 
             medio_pago, 
             estado,
             notas_local
@@ -190,16 +214,47 @@ const actualizarProducto = (req, res) => {
 // Actualizar el total del pedido en la base de datos
 const actualizarPedido = (req, res) => {
     const pedidoId = req.params.id;
-    const { monto_total } = req.body;
+    const { monto_total, cantidad_productos } = req.body; // Ahora recibimos también la cantidad de productos
 
-    const query = `UPDATE pedidos SET monto_total = ? WHERE id = ?`;
+    const query = `UPDATE pedidos SET monto_total = ?, cantidad_productos = ? WHERE id = ?`;
 
-    db.query(query, [monto_total, pedidoId], (error, results) => {
+    db.query(query, [monto_total, cantidad_productos, pedidoId], (error, results) => {
         if (error) {
-            return res.status(500).json({ success: false, message: "Error al actualizar el pedido" });
+            return res.status(500).json({ success: false, message: "Error al actualizar el pedido", error });
         }
 
         res.json({ success: true, message: "Pedido actualizado correctamente" });
+    });
+};
+
+
+const eliminarPedido = (req, res) => {
+    const pedidoId = req.params.id;
+    
+
+    const query = `DELETE FROM pedidos WHERE id = ?`;
+
+    db.query(query, [pedidoId], (error, results) => {
+        if (error) {
+            return res.status(500).json({ success: false, message: "Error al eliminar el pedido" });
+        }
+
+        res.json({ success: true, message: "Pedido eliminado correctamente" });
+    });
+};
+
+const eliminarProducto = (req, res) => {
+    const productoId = req.params.id;
+    
+
+    const query = `DELETE FROM pedidos_contenido WHERE id = ?`;
+
+    db.query(query, [productoId], (error, results) => {
+        if (error) {
+            return res.status(500).json({ success: false, message: "Error al eliminar el producto" });
+        }
+
+        res.json({ success: true, message: "Producto eliminado correctamente" });
     });
 };
 
@@ -222,6 +277,102 @@ const actualizarInfoProducto = (req, res) => {
         res.json({ success: true, message: "Producto actualizado correctamente" });
     });
 };
+
+
+const agregarArticuloOferta = (req, res) => {
+    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
+
+    const query = `
+        INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat) 
+        VALUES (?, ?, ?, ?, 1)
+        ON DUPLICATE KEY UPDATE PRECIO = VALUES(PRECIO), PRECIO_DESC = VALUES(PRECIO_DESC);
+    `;
+
+    db.query(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], (err, result) => {
+        if (err) {
+            console.error("Error al insertar el artículo en oferta:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json({ success: true, message: "Artículo agregado a oferta" });
+    });
+};
+
+const actualizarPrecioOferta = (req, res) => {
+    const { CODIGO_BARRA, PRECIO_DESC } = req.body;
+
+    const query = `
+        UPDATE articulo_temp 
+        SET PRECIO_DESC = ? 
+        WHERE CODIGO_BARRA = ?;
+    `;
+
+    db.query(query, [PRECIO_DESC, CODIGO_BARRA], (err, result) => {
+        if (err) {
+            console.error("Error al actualizar el precio de oferta:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json({ success: true, message: "Precio de oferta actualizado" });
+    });
+};
+
+const eliminarArticuloOferta = (req, res) => {
+    const { CODIGO_BARRA } = req.params;
+
+    const query = `
+        DELETE FROM articulo_temp 
+        WHERE CODIGO_BARRA = ?;
+    `;
+
+    db.query(query, [CODIGO_BARRA], (err, result) => {
+        if (err) {
+            console.error("Error al eliminar el artículo en oferta:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json({ success: true, message: "Artículo eliminado de oferta" });
+    });
+};
+
+const eliminarArticuloDest = (req, res) => {
+    const { CODIGO_BARRA } = req.params;
+
+    const query = `
+        DELETE FROM articulo_temp 
+        WHERE CODIGO_BARRA = ?;
+    `;
+
+    db.query(query, [CODIGO_BARRA], (err, result) => {
+        if (err) {
+            console.error("Error al eliminar el artículo en Destacado:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json({ success: true, message: "Artículo eliminado de Destacado" });
+    });
+};
+
+const agregarArticuloDest = (req, res) => {
+    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
+
+    const query = `
+        INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat) 
+        VALUES (?, ?, ?, ?, 2)
+        ON DUPLICATE KEY UPDATE PRECIO = VALUES(PRECIO), PRECIO_DESC = VALUES(PRECIO_DESC);
+    `;
+
+    db.query(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], (err, result) => {
+        if (err) {
+            console.error("Error al insertar el artículo en Destacados:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json({ success: true, message: "Artículo agregado a Destacados" });
+    });
+};
+
+
 
 const variablesEnv = (req, res) => {
     const config = {
@@ -312,27 +463,52 @@ const MailPedidoProcesado = async (req, res) => {
 
 
 const actualizarEstadoPedidoProcesado = (req, res) => {
-    const pedidoId = req.params.id; // Obtener el ID del pedido desde los parámetros de la URL
-    const { estado } = req.body; // Obtener el nuevo estado desde el cuerpo de la solicitud
+    const pedidoId = req.params.id;
+    const { estado } = req.body;
+
+    console.log("ID recibido:", pedidoId);
+    console.log("Estado recibido:", estado);
+
+    if (!pedidoId || !estado) {
+        console.error("Error: Faltan datos", { pedidoId, estado });
+        return res.status(400).json({ 
+            success: false, 
+            message: "Faltan datos: pedidoId o estado no proporcionados." 
+        });
+    }
 
     const query = `UPDATE pedidos SET estado = ? WHERE id = ?`;
 
     db.query(query, [estado, pedidoId], (error, results) => {
         if (error) {
-            return res.status(500).json({ success: false, message: "Error al actualizar el estado del pedido" });
+            console.error("Error en la consulta a la base de datos:", error);
+            return res.status(500).json({ 
+                success: false, 
+                message: "Error al actualizar el estado del pedido." 
+            });
         }
 
         if (results.affectedRows === 0) {
-            return res.status(404).json({ success: false, message: "Pedido no encontrado" });
+            console.error("Pedido no encontrado:", pedidoId);
+            return res.status(404).json({ 
+                success: false, 
+                message: "Pedido no encontrado." 
+            });
         }
 
-        res.json({ success: true, message: `Estado del pedido actualizado a '${estado}'` });
+        console.log(`Estado del pedido ${pedidoId} actualizado a '${estado}'`);
+        res.json({ 
+            success: true, 
+            message: `Estado del pedido actualizado a '${estado}'.` 
+        });
     });
 };
 
 
+
+
 const MailPedidoEnCamino = async (req, res) => {
-    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone } = req.body;
+    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
 
     // Leer el archivo HTML
     let htmlTemplate = fs.readFileSync(path.join(__dirname, '../resources/email_template/pedido_camino.html'), 'utf8');
@@ -360,7 +536,9 @@ const MailPedidoEnCamino = async (req, res) => {
                                .replace(/{{shippingCost}}/g, shippingCost)
                                .replace(/{{total}}/g, total)
                                .replace(/{{storeMail}}/g, storeMail)
-                               .replace(/{{storePhone}}/g, storePhone);
+                               .replace(/{{storePhone}}/g, storePhone)
+                               .replace(/{{horarioInicio}}/g, desde)
+                               .replace(/{{horarioFin}}/g, hasta);
 
 
     let transporter = nodemailer.createTransport({
@@ -379,7 +557,7 @@ const MailPedidoEnCamino = async (req, res) => {
     let info = await transporter.sendMail({
         from: storeName + ' - ' + storeMail, // Reemplazar con el nombre y correo de tu tienda
         to: clientMail, // Dirección de correo del destinatario
-        subject: 'Pedido confirmado con éxito!',
+        subject: 'Tu pedido esta en camino!',
         html: htmlTemplate,
         attachments: [
             {
@@ -418,6 +596,175 @@ const actualizarEstadoPedidoEnCamino = (req, res) => {
 };
 
 
+const agregarProductoAlPedido = (req, res) => {
+    const { id_pedido, codigo_barra, nombre_producto, cantidad, precio } = req.body;
+    const subtotal = cantidad * precio;
+
+    const insertProductoQuery = `
+    INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio) 
+    VALUES (?, ?, ?, ?, ?)
+    `;
+
+
+    db.query(insertProductoQuery, [id_pedido, codigo_barra, nombre_producto, cantidad, precio], (err, result) => {
+
+        if (err) {
+            console.error('Error al insertar el producto:', err);
+            return res.status(500).json({ success: false, message: 'Error al agregar el producto.' });
+        }
+
+        // 🔹 Después de insertar, actualizar el monto total del pedido
+        const updateTotalQuery = `
+            UPDATE pedidos 
+            SET monto_total = (SELECT SUM(subtotal) FROM pedidos_contenido WHERE id_pedido = ?) 
+            WHERE id = ?
+        `;
+
+        db.query(updateTotalQuery, [id_pedido, id_pedido], (err, result) => {
+            if (err) {
+                console.error('Error al actualizar el monto total del pedido:', err);
+                return res.status(500).json({ success: false, message: 'Error al actualizar el total del pedido.' });
+            }
+
+            res.json({ success: true, message: 'Producto agregado y pedido actualizado correctamente.' });
+        });
+    });
+};
+
+const articulosOferta = (req, res) => {
+    const query = `
+        SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
+        FROM articulo_temp WHERE cat = '1';
+    `;
+    db.query(query, (err, results) => {
+        if (err) {
+            console.error("Error ejecutando la consulta:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json(results);
+    });
+};
+
+const articulosDest = (req, res) => {
+    const query = `
+        SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
+        FROM articulo_temp WHERE cat = '2';
+    `;
+    db.query(query, (err, results) => {
+        if (err) {
+            console.error("Error ejecutando la consulta:", err);
+            res.status(500).send("Error en el servidor");
+            return;
+        }
+        res.json(results);
+    });
+};
+
+
+
+
+const getWhereClause = (fechaInicio, fechaFin) => {
+    if (fechaInicio && fechaFin) {
+        return `WHERE p.fecha BETWEEN '${fechaInicio}' AND '${fechaFin}'`;
+    }
+    return "";
+};
+
+// 🔹 Función para obtener ingresos totales
+const getIngresos = async (fechaInicio, fechaFin) => {
+    const whereClause = getWhereClause(fechaInicio, fechaFin);
+    const query = `SELECT SUM(monto_total) as total FROM pedidos p ${whereClause}`;
+    const [rows] = await db.promise().query(query);
+    return rows.length > 0 ? rows[0].total || 0 : 0;
+};
+
+// 🔹 Función para obtener productos más vendidos
+const getProductosMasVendidos = async (fechaInicio, fechaFin) => {
+    const whereClause = getWhereClause(fechaInicio, fechaFin);
+    const query = `
+        SELECT pc.nombre_producto, SUM(pc.cantidad) as cantidad 
+        FROM pedidos_contenido pc 
+        JOIN pedidos p ON pc.id_pedido = p.id
+        ${whereClause}
+        GROUP BY pc.nombre_producto
+        ORDER BY cantidad DESC 
+        LIMIT 5
+    `;
+    const [rows] = await db.promise().query(query);
+    return rows;
+};
+
+// 🔹 Función para obtener clientes con más compras
+const getClientesTop = async (fechaInicio, fechaFin) => {
+    const whereClause = getWhereClause(fechaInicio, fechaFin);
+    const query = `
+        SELECT p.cliente, COUNT(*) as total 
+        FROM pedidos p 
+        ${whereClause}
+        GROUP BY p.cliente 
+        ORDER BY monto_total DESC 
+        LIMIT 5
+    `;
+    const [rows] = await db.promise().query(query);
+    return rows;
+};
+
+// 🔹 Función para obtener ventas por ciudad
+const getVentasPorCiudad = async (fechaInicio, fechaFin) => {
+    const whereClause = getWhereClause(fechaInicio, fechaFin);
+    const query = `
+        SELECT p.direccion_cliente, SUM(p.monto_total) as total 
+        FROM pedidos p 
+        ${whereClause}
+        GROUP BY p.direccion_cliente
+    `;
+    const [rows] = await db.promise().query(query);
+    return rows;
+};
+
+// 🔹 Función para obtener ventas por mes
+const getVentasPorMes = async (fechaInicio, fechaFin) => {
+    const whereClause = getWhereClause(fechaInicio, fechaFin);
+    const query = `
+        SELECT DATE_FORMAT(p.fecha, '%Y-%m') as mes, SUM(p.monto_total) as total 
+        FROM pedidos p 
+        ${whereClause}
+        GROUP BY mes
+        ORDER BY mes ASC
+    `;
+    const [rows] = await db.promise().query(query);
+    return rows;
+};
+
+// 🔹 Función principal que devuelve todas las estadísticas
+const obtenerStats = async (req, res) => {
+    try {
+        const { fechaInicio, fechaFin } = req.query;
+
+        const ingresos = await getIngresos(fechaInicio, fechaFin);
+        const productosMasVendidos = await getProductosMasVendidos(fechaInicio, fechaFin);
+        const clientesTop = await getClientesTop(fechaInicio, fechaFin);
+        const ventasPorCiudad = await getVentasPorCiudad(fechaInicio, fechaFin);
+        const ventasPorMes = await getVentasPorMes(fechaInicio, fechaFin);
+
+        res.json({
+            ingresos,
+            productosMasVendidos,
+            clientesTop,
+            ventasPorCiudad,
+            ventasPorMes
+        });
+
+    } catch (error) {
+        console.error("Error en estadísticas:", error);
+        res.status(500).json({ error: "Error al obtener estadísticas" });
+    }
+};
+
+
+
+
 
 
 module.exports = {
@@ -435,7 +782,19 @@ module.exports = {
     variablesEnv,
     actualizarEstadoPedidoProcesado,
     MailPedidoEnCamino,
-    actualizarEstadoPedidoEnCamino
+    actualizarEstadoPedidoEnCamino,
+    loginCheck, 
+    eliminarPedido,
+    agregarProductoAlPedido,
+    eliminarProducto,
+    agregarArticuloOferta,
+    actualizarPrecioOferta,
+    eliminarArticuloOferta,
+    articulosOferta, 
+    agregarArticuloDest,
+    articulosDest,
+    eliminarArticuloDest,
+    obtenerStats
 
 
 

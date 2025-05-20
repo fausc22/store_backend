@@ -31,4 +31,14 @@ router.post('/mailPedidoRealizado', storeController.MailPedidoRealizado);
 
 router.post('/NuevoPedido', storeController.nuevoPedido);
 
+router.get("/getImagenesPublicidad", storeController.getImagenesPublicidad);
+
+router.post("/subirImagenPublicidad", storeController.subirImagenPublicidad);
+
+router.delete("/eliminarImagenPublicidad/:nombreImagen", storeController.eliminarImagenPublicidad);
+
+router.get("/verificarImagen/:codigo_barra", storeController.verificarImagenArticulo);
+
+router.post("/subirImagenArticulo", storeController.subirImagenArticulo);
+
 module.exports = router;
