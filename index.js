@@ -11,7 +11,7 @@ const storeRoutes = require('./routes/storeRoutes');
 const adminRoutes = require('./routes/adminRoutes'); 
 
 // Configurar middleware de CORS
-const allowedOrigins = ['http://localhost:5173', 'http://localhost:5174', 'https://tienda-front-lyart.vercel.app'];
+const allowedOrigins = ['http://localhost:3000', 'http://localhost:5174', 'https://tienda-front-lyart.vercel.app'];
 
 const corsOptions = {
     origin: (origin, callback) => {
