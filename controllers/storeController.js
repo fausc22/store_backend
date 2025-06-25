@@ -408,28 +408,32 @@ const calculateShipping = async (req, res) => {
 };
 
 const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
-    const R = 6371;
+    const R = 6371; // Radio de la Tierra en km
     const dLat = deg2rad(lat2 - lat1);
     const dLon = deg2rad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const d = R * c;
-    return d;
+    const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const d = R * c; // Distancia en km
+    return Math.round(d * 100) / 100; // Redondear a 2 decimales
 };
 
 const deg2rad = (deg) => {
-    return deg * (Math.PI / 180);
+    return deg * (Math.PI/180);
 };
 
 const calculateShippingCost = (distance) => {
-    const baseCost = parseFloat(process.env.STORE_DELIVERY_BASE);
-    const costPerKm = parseFloat(process.env.STORE_DELIVERY_KM);
-    return baseCost + (distance * costPerKm);
+    const baseCost = parseFloat(process.env.STORE_DELIVERY_BASE) || 500; // Base por defecto
+    const costPerKm = parseFloat(process.env.STORE_DELIVERY_KM) || 100; // Por km por defecto
+    
+    // Costo mínimo para distancias muy cortas
+    const minCost = baseCost;
+    const calculatedCost = baseCost + (distance * costPerKm);
+    
+    return Math.max(minCost, calculatedCost);
 };
-
 // MERCADOPAGO (mantener igual)
 const client = new mercadopago.MercadoPagoConfig({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
@@ -784,6 +788,357 @@ const eliminarOfertaDestacado = (req, res) => {
     });
 };
 
+
+
+const searchAddresses = async (req, res) => {
+    const { query, country = 'ar', limit = 5 } = req.body;
+
+    if (!query || query.length < 3) {
+        return res.status(400).json({ 
+            message: 'Query debe tener al menos 3 caracteres',
+            results: []
+        });
+    }
+
+    try {
+        // Usar OpenCage Geosearch para autocompletado (no Geocoding)
+        const geosearchUrl = `https://api.opencagedata.com/geosearch/v1/json`;
+        
+        const params = new URLSearchParams({
+            q: query,
+            key: process.env.OPENCAGE_API_KEY,
+            limit: limit,
+            countrycode: country,
+            language: 'es',
+            // Agregar bias hacia Argentina/Córdoba
+            proximity: '-31.4201,-64.1888', // Coordenadas de Córdoba
+            min_confidence: 3 // Mínima confianza para resultados
+        });
+
+        const response = await axios.get(`${geosearchUrl}?${params}`);
+        
+        if (response.data.results && response.data.results.length > 0) {
+            // Procesar resultados y calcular costo de envío
+            const processedResults = await Promise.all(
+                response.data.results.map(async (result) => {
+                    const { lat, lng } = result.geometry;
+                    const distance = getDistanceFromLatLonInKm(
+                        storeCoordinates.lat, 
+                        storeCoordinates.lng, 
+                        lat, 
+                        lng
+                    );
+                    const shippingCost = calculateShippingCost(distance);
+                    
+                    return {
+                        formatted: result.formatted,
+                        distance,
+                        shippingCost,
+                        confidence: result.confidence,
+                        components: result.components
+                    };
+                })
+            );
+
+            res.json({ 
+                results: processedResults,
+                success: true
+            });
+        } else {
+            // Si no hay resultados con geosearch, intentar con geocoding como fallback
+            const fallbackResults = await fallbackGeocodingSearch(query);
+            res.json({ 
+                results: fallbackResults,
+                success: true,
+                fallback: true
+            });
+        }
+    } catch (error) {
+        console.error('Error en búsqueda de direcciones:', error);
+        
+        // Fallback si falla geosearch
+        try {
+            const fallbackResults = await fallbackGeocodingSearch(query);
+            res.json({ 
+                results: fallbackResults,
+                success: true,
+                fallback: true
+            });
+        } catch (fallbackError) {
+            console.error('Error en fallback:', fallbackError);
+            res.status(500).json({ 
+                message: 'Error al buscar direcciones',
+                results: []
+            });
+        }
+    }
+};
+
+
+
+const fallbackGeocodingSearch = async (query) => {
+    try {
+        // Mejorar el query para geocoding
+        const enhancedQuery = enhanceAddressQuery(query);
+        
+        const response = await axios.get(
+            `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(enhancedQuery)}&key=${process.env.OPENCAGE_API_KEY}&countrycode=ar&language=es&limit=5`
+        );
+
+        if (response.data.results && response.data.results.length > 0) {
+            return response.data.results.map(result => {
+                const { lat, lng } = result.geometry;
+                const distance = getDistanceFromLatLonInKm(
+                    storeCoordinates.lat, 
+                    storeCoordinates.lng, 
+                    lat, 
+                    lng
+                );
+                const shippingCost = calculateShippingCost(distance);
+                
+                return {
+                    formatted: result.formatted,
+                    distance,
+                    shippingCost,
+                    confidence: result.confidence,
+                    components: result.components
+                };
+            });
+        }
+        
+        return [];
+    } catch (error) {
+        console.error('Error en fallback geocoding:', error);
+        return [];
+    }
+};
+
+const enhanceAddressQuery = (query) => {
+    let enhanced = query.toLowerCase().trim();
+    
+    // Mapeo de abreviaciones comunes
+    const commonAbbreviations = {
+        'av': 'avenida',
+        'av.': 'avenida',
+        'ave': 'avenida',
+        'st': 'street',
+        'st.': 'street',
+        'blvd': 'boulevard',
+        'blvd.': 'boulevard'
+    };
+    
+    // Reemplazar abreviaciones
+    Object.keys(commonAbbreviations).forEach(abbr => {
+        const regex = new RegExp(`\\b${abbr}\\b`, 'gi');
+        enhanced = enhanced.replace(regex, commonAbbreviations[abbr]);
+    });
+    
+    // Si no contiene "córdoba" o "argentina", agregarlos
+    if (!enhanced.includes('córdoba') && !enhanced.includes('cordoba')) {
+        enhanced += ', córdoba';
+    }
+    
+    if (!enhanced.includes('argentina')) {
+        enhanced += ', argentina';
+    }
+    
+    return enhanced;
+};
+
+
+
+
+// Cache en memoria para evitar verificaciones repetidas
+const imageCache = new Map();
+const CACHE_DURATION = 1000 * 60 * 30; // 30 minutos
+
+const getProductImage = async (req, res) => {
+    const { codigo_barra } = req.params;
+    
+    if (!codigo_barra) {
+        return res.status(400).json({ error: 'Código de barra requerido' });
+    }
+
+    // Verificar cache
+    const cacheKey = `image_${codigo_barra}`;
+    const cached = imageCache.get(cacheKey);
+    
+    if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
+        return res.json({
+            success: true,
+            imageUrl: cached.url,
+            source: cached.source,
+            fromCache: true
+        });
+    }
+
+    try {
+        // 1. PRIMERA OPCIÓN: Verificar imagen externa (web)
+        const externalUrl = `https://www.rsoftware.com.ar/imgart/${codigo_barra}.png`;
+        const externalExists = await checkImageExists(externalUrl);
+        
+        if (externalExists) {
+            // Guardar en cache
+            imageCache.set(cacheKey, {
+                url: externalUrl,
+                source: 'external',
+                timestamp: Date.now()
+            });
+            
+            return res.json({
+                success: true,
+                imageUrl: externalUrl,
+                source: 'external'
+            });
+        }
+
+        // 2. SEGUNDA OPCIÓN: Verificar imagen en almacenamiento interno
+        const internalImagePath = path.join(__dirname, '../resources/img_art', `${codigo_barra}.png`);
+        const internalImageJpgPath = path.join(__dirname, '../resources/img_art', `${codigo_barra}.jpg`);
+        
+        // Verificar si existe PNG o JPG en almacenamiento interno
+        let internalUrl = null;
+        if (fs.existsSync(internalImagePath)) {
+            internalUrl = `/images/products/${codigo_barra}.png`;
+        } else if (fs.existsSync(internalImageJpgPath)) {
+            internalUrl = `/images/products/${codigo_barra}.jpg`;
+        }
+        
+        if (internalUrl) {
+            // Construir URL completa para el frontend
+            // Usar la URL base del servidor, no NEXT_PUBLIC_API_URL
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            const fullInternalUrl = `${baseUrl}${internalUrl}`;
+            
+            // Guardar en cache
+            imageCache.set(cacheKey, {
+                url: fullInternalUrl,
+                source: 'internal',
+                timestamp: Date.now()
+            });
+            
+            return res.json({
+                success: true,
+                imageUrl: fullInternalUrl,
+                source: 'internal'
+            });
+        }
+
+        // 3. TERCERA OPCIÓN: Imagen genérica (placeholder)
+        // Construir URL completa para el placeholder también
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const placeholderUrl = `${baseUrl}/images/placeholder.png`;
+        
+        // Guardar en cache (con menos tiempo para placeholders)
+        imageCache.set(cacheKey, {
+            url: placeholderUrl,
+            source: 'placeholder',
+            timestamp: Date.now()
+        });
+        
+        return res.json({
+            success: true,
+            imageUrl: placeholderUrl,
+            source: 'placeholder'
+        });
+
+    } catch (error) {
+        console.error('Error getting product image:', error);
+        
+        // En caso de error, devolver placeholder con URL completa
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const placeholderUrl = `${baseUrl}/images/placeholder.png`;
+        
+        return res.json({
+            success: true,
+            imageUrl: placeholderUrl,
+            source: 'placeholder',
+            error: 'Error retrieving image'
+        });
+    }
+};
+
+// Función helper para verificar si una imagen externa existe
+const checkImageExists = async (url) => {
+    try {
+        const response = await axios.head(url, {
+            timeout: 5000, // 5 segundos timeout
+            validateStatus: function (status) {
+                return status === 200;
+            }
+        });
+        return response.status === 200;
+    } catch (error) {
+        return false;
+    }
+};
+
+// Función para limpiar cache (opcional, para mantenimiento)
+const clearImageCache = (req, res) => {
+    imageCache.clear();
+    res.json({ 
+        success: true, 
+        message: 'Cache de imágenes limpiado',
+        timestamp: new Date().toISOString()
+    });
+};
+
+// Función para obtener estadísticas del cache (opcional, para debug)
+const getImageCacheStats = (req, res) => {
+    const stats = {
+        totalCached: imageCache.size,
+        cacheEntries: [],
+        cacheSize: imageCache.size
+    };
+
+    // Solo en desarrollo, mostrar entradas del cache
+    if (process.env.NODE_ENV === 'development') {
+        imageCache.forEach((value, key) => {
+            stats.cacheEntries.push({
+                key,
+                source: value.source,
+                timestamp: new Date(value.timestamp).toISOString(),
+                age: Date.now() - value.timestamp
+            });
+        });
+    }
+
+    res.json(stats);
+};
+
+// Función para servir imágenes internas directamente
+const serveInternalImage = (req, res) => {
+    const { filename } = req.params;
+    const imagePath = path.join(__dirname, '../resources/img_art', filename);
+    
+    // Verificar que el archivo existe y es una imagen
+    if (!fs.existsSync(imagePath)) {
+        return res.status(404).json({ error: 'Imagen no encontrada' });
+    }
+
+    // Verificar extensión
+    const ext = path.extname(filename).toLowerCase();
+    if (!['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) {
+        return res.status(400).json({ error: 'Formato de imagen no válido' });
+    }
+
+    // Configurar headers apropiados
+    const contentType = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp'
+    }[ext] || 'image/png';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache por 1 año
+
+    // Enviar la imagen
+    const imageStream = fs.createReadStream(imagePath);
+    imageStream.pipe(res);
+};
+
 module.exports = {
     articulosOferta,
     articulosDestacados,
@@ -806,5 +1161,10 @@ module.exports = {
     subirImagenArticulo,
     gestionarOfertasDestacados,
     obtenerOfertasDestacados,
-    eliminarOfertaDestacado
+    eliminarOfertaDestacado,
+    searchAddresses,
+    getProductImage,
+    clearImageCache,
+    getImageCacheStats,
+    serveInternalImage
 };

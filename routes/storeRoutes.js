@@ -34,4 +34,15 @@ router.post('/ofertas-destacados', storeController.gestionarOfertasDestacados);
 router.get('/ofertas-destacados', storeController.obtenerOfertasDestacados);
 router.delete('/ofertas-destacados/:id', storeController.eliminarOfertaDestacado);
 
+
+router.post('/searchAddresses', storeController.searchAddresses);
+// Ruta principal para obtener imagen de producto
+router.get('/image/:codigo_barra', storeController.getProductImage);
+// Ruta para servir imágenes internas directamente
+router.get('/images/products/:filename', storeController.serveInternalImage);
+// Rutas de utilidad (opcionales)
+router.delete('/cache/images', storeController.clearImageCache);
+router.get('/cache/images/stats', storeController.getImageCacheStats);
+
+
 module.exports = router;

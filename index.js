@@ -11,7 +11,7 @@ const storeRoutes = require('./routes/storeRoutes');
 const adminRoutes = require('./routes/adminRoutes'); 
 
 // Configurar middleware de CORS
-const allowedOrigins = ['http://localhost:3000', 'http://localhost:5174', 'https://tienda-front-lyart.vercel.app'];
+const allowedOrigins = ['http://localhost:3000', 'http://localhost:5173'];
 
 const corsOptions = {
     origin: (origin, callback) => {
@@ -45,7 +45,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Servir imágenes de la carpeta 'resources/publicidad'
 app.use("/publicidad", express.static("resources/publicidad"));
-
+app.use("/images/products", express.static("resources/img_art"));
+app.use("/images", express.static("public/images"));
 
 // Usar las rutas importadas
 app.use('/store', storeRoutes);
