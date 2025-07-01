@@ -10,7 +10,7 @@ router.get('/productosMAIN', storeController.productosMain);
 router.get('/articulos/:categoryId', storeController.filtradoCategorias);
 router.get('/buscar', storeController.buscarProductos);
 router.get('/categorias', storeController.obtenerCategorias);
-router.get('/artCHECKOUT', storeController.articulosCheckout);
+router.get('/articulosCheckout', storeController.articulosCheckout);
 
 router.post('/cart', storeController.enviarCarrito);
 router.get('/cart', storeController.obtenerCarrito);
@@ -43,6 +43,9 @@ router.get('/images/products/:filename', storeController.serveInternalImage);
 // Rutas de utilidad (opcionales)
 router.delete('/cache/images', storeController.clearImageCache);
 router.get('/cache/images/stats', storeController.getImageCacheStats);
+
+
+
 
 
 module.exports = router;

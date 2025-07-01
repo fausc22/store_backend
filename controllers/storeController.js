@@ -9,14 +9,29 @@ const { create } = require('domain');
 const multer = require("multer");
 require('dotenv').config();
 
-// Función helper para calcular IVA
-const calcularIVA = (ivaValue) => {
-    switch (ivaValue) {
-        case 0: return 1.21;   // IVA 21%
-        case 1: return 1.105;  // IVA 10.5%
-        case 2: return 1.00;   // Sin IVA
-        default: return 1.21;  // Valor por defecto
-    }
+// Función helper para obtener la columna de precio según la variable IVA
+const getPrecioColumn = () => {
+    const ivaValue = parseInt(process.env.IVA) || 0;
+    return `PRECIO_SIN_IVA_${ivaValue}`;
+};
+
+
+
+// Función helper para crear respuesta paginada
+const createPaginatedResponse = (data, page, limit, totalCount) => {
+    const totalPages = Math.ceil(totalCount / limit);
+    
+    return {
+        data: data,
+        pagination: {
+            currentPage: parseInt(page),
+            totalPages: totalPages,
+            totalItems: totalCount,
+            itemsPerPage: parseInt(limit),
+            hasNextPage: page < totalPages,
+            hasPrevPage: page > 1
+        }
+    };
 };
 
 // ARTÍCULOS EN OFERTA
@@ -53,15 +68,28 @@ const calcularIVA = (ivaValue) => {
 // };
 
 
+// ARTÍCULOS EN OFERTA
 const articulosOferta = (req, res) => {
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
+    const precioColumn = getPrecioColumn();
 
-    const query = `SELECT CODIGO_BARRA, 
-    COD_INTERNO, COD_IVA, PRECIO, COSTO, porc_impint, 
-    COD_DPTO, PESABLE, STOCK, art_desc_vta FROM articulo LIMIT 8`;
+    const query = `
+        SELECT 
+            CODIGO_BARRA, 
+            COD_INTERNO, 
+            COD_IVA, 
+            ${precioColumn} AS PRECIO, 
+            COSTO, 
+            porc_impint, 
+            COD_DPTO, 
+            PESABLE, 
+            STOCK, 
+            art_desc_vta 
+        FROM articulo 
+        WHERE HABILITADO = 'S'
+        LIMIT 8
+    `;
 
-    db.query(query, [IVA], (err, results) => {
+    db.query(query, (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta de ofertas:', err);
             res.status(500).json({ error: 'Error en el servidor' });
@@ -73,14 +101,13 @@ const articulosOferta = (req, res) => {
 
 // ARTÍCULOS DESTACADOS DE LA PÁGINA HOME
 const articulosDestacados = (req, res) => {
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
+    const precioColumn = getPrecioColumn();
 
     const query = `
         SELECT 
             at.CODIGO_BARRA,
             at.art_desc_vta,
-            ROUND(at.PRECIO * ?, 2) AS PRECIO,
+            a.${precioColumn} AS PRECIO,
             at.PRECIO_DESC,
             a.STOCK,
             a.PESABLE,
@@ -94,7 +121,7 @@ const articulosDestacados = (req, res) => {
         ORDER BY at.orden ASC, at.fecha_inicio DESC;
     `;
 
-    db.query(query, [IVA], (err, results) => {
+    db.query(query, (err, results) => {
         if (err) {
             console.error('Error ejecutando la consulta de destacados:', err);
             res.status(500).json({ error: 'Error en el servidor' });
@@ -105,122 +132,193 @@ const articulosDestacados = (req, res) => {
 };
 
 // PRODUCTOS PRINCIPALES (HOME)
+/// PRODUCTOS PRINCIPALES CON PAGINACIÓN
 const productosMain = (req, res) => {
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
+    const precioColumn = getPrecioColumn();
+    
+    // Parámetros de paginación
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
 
-    const query = `
-        SELECT 
-            CODIGO_BARRA,
-            COD_INTERNO,
-            COD_IVA,
-            ROUND(PRECIO * ?, 2) AS PRECIO,
-            COSTO,
-            porc_impint,
-            COD_DPTO,
-            PESABLE,
-            STOCK,
-            art_desc_vta,
-            HABILITADO
+    // Primero obtener el total de productos
+    const countQuery = `
+        SELECT COUNT(*) as total 
         FROM articulo 
         WHERE HABILITADO = 'S'
-        ORDER BY art_desc_vta ASC 
-        LIMIT 16;
     `;
 
-    db.query(query, [IVA], (err, results) => {
+    db.query(countQuery, (err, countResult) => {
         if (err) {
-            console.error('Error ejecutando la consulta de productos principales:', err);
-            res.status(500).json({ error: 'Error en el servidor' });
-            return;
+            console.error('Error obteniendo conteo de productos:', err);
+            return res.status(500).json({ error: 'Error en el servidor' });
         }
-        res.json(results);
+
+        const totalCount = countResult[0].total;
+
+        // Consulta principal con paginación
+        const query = `
+            SELECT 
+                CODIGO_BARRA,
+                COD_INTERNO,
+                COD_IVA,
+                ${precioColumn} AS PRECIO,
+                COSTO,
+                porc_impint,
+                COD_DPTO,
+                PESABLE,
+                STOCK,
+                art_desc_vta,
+                HABILITADO
+            FROM articulo 
+            WHERE HABILITADO = 'S'
+            ORDER BY ${precioColumn} DESC 
+            LIMIT ? OFFSET ?
+        `;
+
+        db.query(query, [limit, offset], (err, results) => {
+            if (err) {
+                console.error('Error ejecutando la consulta de productos principales:', err);
+                return res.status(500).json({ error: 'Error en el servidor' });
+            }
+            
+            const response = createPaginatedResponse(results, page, limit, totalCount);
+            res.json(response);
+        });
     });
 };
 
 // FILTRADO POR CATEGORÍAS
 const filtradoCategorias = (req, res) => {
     const categoryName = req.params.categoryId;
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
+    const precioColumn = getPrecioColumn();
+    
+    // Parámetros de paginación
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
 
-    const query = `
-        SELECT 
-            ar.CODIGO_BARRA,
-            ar.COD_INTERNO,
-            ar.COD_IVA,
-            ROUND(ar.PRECIO * ?, 2) AS PRECIO,
-            ar.COSTO,
-            ar.porc_impint,
-            ar.COD_DPTO,
-            ar.PESABLE,
-            ar.STOCK,
-            ar.art_desc_vta,
-            c.NOM_CLASIF as categoria_nombre
+    // Primero obtener el total de productos en la categoría
+    const countQuery = `
+        SELECT COUNT(*) as total 
         FROM articulo ar 
         INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
-        WHERE c.NOM_CLASIF = ? 
-        AND ar.HABILITADO = 'S'
-        ORDER BY ar.art_desc_vta ASC;
+        WHERE c.NOM_CLASIF = ? AND ar.HABILITADO = 'S'
     `;
 
-    db.query(query, [IVA, categoryName], (err, results) => {
+    db.query(countQuery, [categoryName], (err, countResult) => {
         if (err) {
-            console.error('Error ejecutando la consulta de categorías:', err);
-            res.status(500).json({ error: 'Error en el servidor' });
-            return;
+            console.error('Error obteniendo conteo de productos por categoría:', err);
+            return res.status(500).json({ error: 'Error en el servidor' });
         }
-        res.json(results);
+
+        const totalCount = countResult[0].total;
+
+        // Consulta principal con paginación
+        const query = `
+            SELECT 
+                ar.CODIGO_BARRA,
+                ar.COD_INTERNO,
+                ar.COD_IVA,
+                ar.${precioColumn} AS PRECIO,
+                ar.COSTO,
+                ar.porc_impint,
+                ar.COD_DPTO,
+                ar.PESABLE,
+                ar.STOCK,
+                ar.art_desc_vta,
+                c.NOM_CLASIF as categoria_nombre
+            FROM articulo ar 
+            INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
+            WHERE c.NOM_CLASIF = ? 
+            AND ar.HABILITADO = 'S'
+            ORDER BY ar.art_desc_vta ASC
+            LIMIT ? OFFSET ?
+        `;
+
+        db.query(query, [categoryName, limit, offset], (err, results) => {
+            if (err) {
+                console.error('Error ejecutando la consulta de categorías:', err);
+                return res.status(500).json({ error: 'Error en el servidor' });
+            }
+            
+            const response = createPaginatedResponse(results, page, limit, totalCount);
+            res.json(response);
+        });
     });
 };
 
 // BÚSQUEDA DE PRODUCTOS
 const buscarProductos = (req, res) => {
     const searchTerm = req.query.q;
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
+    const precioColumn = getPrecioColumn();
+    
+    // Parámetros de paginación
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
 
     if (!searchTerm || searchTerm.trim().length < 2) {
         return res.status(400).json({ error: 'Término de búsqueda muy corto' });
     }
 
-    const query = `
-        SELECT 
-            CODIGO_BARRA,
-            COD_INTERNO,
-            COD_IVA,
-            ROUND(PRECIO * ?, 2) AS PRECIO,
-            COSTO,
-            porc_impint,
-            COD_DPTO,
-            PESABLE,
-            STOCK,
-            art_desc_vta
-        FROM articulo
-        WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
-        AND HABILITADO = 'S'
-        ORDER BY 
-            CASE 
-                WHEN art_desc_vta LIKE ? THEN 1
-                WHEN CODIGO_BARRA LIKE ? THEN 2
-                ELSE 3
-            END,
-            art_desc_vta ASC
-        LIMIT 50;
-    `;
-
     const searchPattern = `%${searchTerm}%`;
     const exactStart = `${searchTerm}%`;
 
-    db.query(query, [IVA, searchPattern, searchPattern, searchPattern, exactStart, exactStart], (err, results) => {
+    // Primero obtener el total de productos que coinciden
+    const countQuery = `
+        SELECT COUNT(*) as total 
+        FROM articulo
+        WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
+        AND HABILITADO = 'S'
+    `;
+
+    db.query(countQuery, [searchPattern, searchPattern, searchPattern], (err, countResult) => {
         if (err) {
-            console.error('Error ejecutando la búsqueda:', err);
-            res.status(500).json({ error: 'Error en el servidor' });
-            return;
+            console.error('Error obteniendo conteo de búsqueda:', err);
+            return res.status(500).json({ error: 'Error en el servidor' });
         }
-        res.json(results);
+
+        const totalCount = countResult[0].total;
+
+        // Consulta principal con paginación
+        const query = `
+            SELECT 
+                CODIGO_BARRA,
+                COD_INTERNO,
+                COD_IVA,
+                ${precioColumn} AS PRECIO,
+                COSTO,
+                porc_impint,
+                COD_DPTO,
+                PESABLE,
+                STOCK,
+                art_desc_vta
+            FROM articulo
+            WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
+            AND HABILITADO = 'S'
+            ORDER BY 
+                CASE 
+                    WHEN art_desc_vta LIKE ? THEN 1
+                    WHEN CODIGO_BARRA LIKE ? THEN 2
+                    ELSE 3
+                END,
+                art_desc_vta ASC
+            LIMIT ? OFFSET ?
+        `;
+
+        db.query(query, [searchPattern, searchPattern, searchPattern, exactStart, exactStart, limit, offset], (err, results) => {
+            if (err) {
+                console.error('Error ejecutando la búsqueda:', err);
+                return res.status(500).json({ error: 'Error en el servidor' });
+            }
+            
+            const response = createPaginatedResponse(results, page, limit, totalCount);
+            res.json(response);
+        });
     });
 };
+
 
 // OBTENER CATEGORÍAS
 const obtenerCategorias = (req, res) => {
@@ -248,37 +346,197 @@ const obtenerCategorias = (req, res) => {
 };
 
 // ARTÍCULOS CHECKOUT (productos sugeridos)
-const articulosCheckout = (req, res) => {
-    const ivaValue = parseInt(process.env.IVA);
-    const IVA = calcularIVA(ivaValue);
 
-    const query = `
-        SELECT 
-            CODIGO_BARRA,
-            COD_INTERNO,
-            COD_IVA,
-            ROUND(PRECIO * ?, 2) AS PRECIO,
-            COSTO,
-            porc_impint,
-            COD_DPTO,
-            PESABLE,
-            STOCK,
-            art_desc_vta
-        FROM articulo 
-        WHERE art_desc_vta LIKE '%COCA COLA%' 
-        AND HABILITADO = 'S'
-        LIMIT 4;
+// FUNCIÓN BACKEND CORREGIDA
+const articulosCheckout = (req, res) => {
+    const ivaValue = parseInt(process.env.IVA) || 0;
+    const precioColumn = `PRECIO_SIN_IVA_${ivaValue}`;
+    
+    // Obtener códigos de barra del carrito desde query parameters
+    const cartCodes = req.query.cartCodes ? req.query.cartCodes.split(',') : [];
+    
+    console.log('🛒 Códigos del carrito recibidos:', cartCodes);
+    
+    // Si no hay items en el carrito, mostrar productos aleatorios
+    if (cartCodes.length === 0) {
+        const fallbackQuery = `
+            SELECT 
+                CODIGO_BARRA,
+                COD_INTERNO,
+                COD_IVA,
+                ${precioColumn} AS PRECIO,
+                COSTO,
+                porc_impint,
+                COD_DPTO,
+                PESABLE,
+                STOCK,
+                art_desc_vta
+            FROM articulo 
+            WHERE HABILITADO = 'S'
+            ORDER BY RAND()
+            LIMIT 6;
+        `;
+        
+        db.query(fallbackQuery, (err, results) => {
+            if (err) {
+                console.error('Error ejecutando consulta fallback:', err);
+                return res.status(500).json({ error: 'Error en el servidor' });
+            }
+            console.log('✅ Productos aleatorios encontrados:', results.length);
+            return res.json(results);
+        });
+        return;
+    }
+
+    // Construir placeholders para cada uso en la consulta
+    const placeholders1 = cartCodes.map(() => '?').join(','); // Para NOT IN
+    const placeholders2 = cartCodes.map(() => '?').join(','); // Para categorías
+    const placeholders3 = cartCodes.map(() => '?').join(','); // Para ORDER BY
+    
+    // Consulta más simple y robusta
+    const smartQuery = `
+        SELECT DISTINCT
+            a.CODIGO_BARRA,
+            a.COD_INTERNO,
+            a.COD_IVA,
+            ${precioColumn} AS PRECIO,
+            a.COSTO,
+            a.porc_impint,
+            a.COD_DPTO,
+            a.PESABLE,
+            a.STOCK,
+            a.art_desc_vta,
+            c.NOM_CLASIF as categoria_nombre
+        FROM articulo a
+        LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+        WHERE a.HABILITADO = 'S'
+        AND a.CODIGO_BARRA NOT IN (${placeholders1})
+        AND a.COD_DPTO IN (
+            SELECT DISTINCT COD_DPTO 
+            FROM articulo 
+            WHERE CODIGO_BARRA IN (${placeholders2}) 
+            AND HABILITADO = 'S'
+        )
+        ORDER BY RAND()
+        LIMIT 6;
     `;
 
-    db.query(query, [IVA], (err, results) => {
+    // Crear array de parámetros (duplicar cartCodes para cada placeholder)
+    const queryParams = [...cartCodes, ...cartCodes];
+    
+    console.log('📋 Ejecutando consulta de misma categoría...');
+    console.log('🔧 Parámetros:', queryParams);
+    
+    db.query(smartQuery, queryParams, (err, results) => {
         if (err) {
-            console.error('Error ejecutando la consulta de checkout:', err);
-            res.status(500).json({ error: 'Error en el servidor' });
+            console.error('Error ejecutando consulta de categoría:', err);
+            
+            // Fallback: buscar productos con palabras clave similares
+            const keywordQuery = `
+                SELECT DISTINCT
+                    a.CODIGO_BARRA,
+                    a.COD_INTERNO,
+                    a.COD_IVA,
+                    ${precioColumn} AS PRECIO,
+                    a.COSTO,
+                    a.porc_impint,
+                    a.COD_DPTO,
+                    a.PESABLE,
+                    a.STOCK,
+                    a.art_desc_vta
+                FROM articulo a
+                WHERE a.HABILITADO = 'S'
+                AND a.CODIGO_BARRA NOT IN (${placeholders1})
+                AND EXISTS (
+                    SELECT 1 FROM articulo cart_item
+                    WHERE cart_item.CODIGO_BARRA IN (${placeholders2})
+                    AND a.art_desc_vta LIKE CONCAT('%', 
+                        SUBSTRING_INDEX(cart_item.art_desc_vta, ' ', 1), '%')
+                    AND cart_item.HABILITADO = 'S'
+                )
+                ORDER BY RAND()
+                LIMIT 6;
+            `;
+            
+            db.query(keywordQuery, queryParams, (keywordErr, keywordResults) => {
+                if (keywordErr) {
+                    console.error('Error en consulta de palabras clave:', keywordErr);
+                    
+                    // Último fallback: productos aleatorios excluyendo carrito
+                    const finalFallbackQuery = `
+                        SELECT 
+                            CODIGO_BARRA,
+                            COD_INTERNO,
+                            COD_IVA,
+                            ${precioColumn} AS PRECIO,
+                            COSTO,
+                            porc_impint,
+                            COD_DPTO,
+                            PESABLE,
+                            STOCK,
+                            art_desc_vta
+                        FROM articulo 
+                        WHERE HABILITADO = 'S'
+                        AND CODIGO_BARRA NOT IN (${placeholders1})
+                        ORDER BY RAND()
+                        LIMIT 6;
+                    `;
+                    
+                    db.query(finalFallbackQuery, cartCodes, (finalErr, finalResults) => {
+                        if (finalErr) {
+                            console.error('Error en fallback final:', finalErr);
+                            return res.status(500).json({ error: 'Error en el servidor' });
+                        }
+                        console.log('✅ Productos fallback final encontrados:', finalResults.length);
+                        return res.json(finalResults);
+                    });
+                    return;
+                }
+                console.log('✅ Productos por palabras clave encontrados:', keywordResults.length);
+                return res.json(keywordResults);
+            });
             return;
         }
+        
+        // Si no encontró productos de la misma categoría, buscar aleatorios
+        if (results.length === 0) {
+            const randomQuery = `
+                SELECT 
+                    CODIGO_BARRA,
+                    COD_INTERNO,
+                    COD_IVA,
+                    ${precioColumn} AS PRECIO,
+                    COSTO,
+                    porc_impint,
+                    COD_DPTO,
+                    PESABLE,
+                    STOCK,
+                    art_desc_vta
+                FROM articulo 
+                WHERE HABILITADO = 'S'
+                AND CODIGO_BARRA NOT IN (${placeholders1})
+                ORDER BY RAND()
+                LIMIT 6;
+            `;
+            
+            db.query(randomQuery, cartCodes, (randomErr, randomResults) => {
+                if (randomErr) {
+                    console.error('Error en consulta aleatoria:', randomErr);
+                    return res.status(500).json({ error: 'Error en el servidor' });
+                }
+                console.log('✅ Productos aleatorios (sin categoría) encontrados:', randomResults.length);
+                return res.json(randomResults);
+            });
+            return;
+        }
+        
+        console.log('✅ Productos de misma categoría encontrados:', results.length);
         res.json(results);
     });
 };
+
+
+
 
 // GESTIÓN DE CARRITO MEJORADA
 const enviarCarrito = (req, res) => {
@@ -434,38 +692,112 @@ const calculateShippingCost = (distance) => {
     
     return Math.max(minCost, calculatedCost);
 };
+
+
+
 // MERCADOPAGO (mantener igual)
 const client = new mercadopago.MercadoPagoConfig({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
 });
 
-const createPreference = async (req, res) => {
+const createPreferenceORIGINAL = async (req, res) => {
+    const nombreTienda = process.env.STORE_NAME || 'Mi Tienda';
+    
     try {
         const body = {
             items: [
                 {
-                    title: "PuntoSur MultiMercado",
+                    title: `Pedido de ${nombreTienda}`,
                     quantity: 1,
                     unit_price: Number(req.body.total),
                     currency_id: "ARS"
-                },
+                }
             ],
+            // ✅ URLs FIJAS Y CORRECTAS
             back_urls: {
-                success: "localhost:5173/confirmacion",
-                failure: "localhost/confirmacion",
-                pending: "localhost/confirmacion",
+                success: "http://localhost:3000/confirmacion",
+                failure: "http://localhost:3000/confirmacion", 
+                pending: "http://localhost:3000/confirmacion"
             },
             auto_return: "approved",
+            // Configuraciones adicionales
+            payment_methods: {
+                excluded_payment_methods: [],
+                excluded_payment_types: [],
+                installments: 12
+            }
         };
+
+        console.log('🏪 Creando preferencia para:', nombreTienda);
+        console.log('💰 Total:', req.body.total);
+        console.log('🔗 URLs de retorno:', body.back_urls);
 
         const preference = new mercadopago.Preference(client);
         const result = await preference.create({ body });
-        res.json({ id: result.id });
+        
+        console.log('✅ Preferencia creada exitosamente:', result.id);
+        
+        res.json({ 
+            id: result.id,
+            init_point: result.init_point,
+            sandbox_init_point: result.sandbox_init_point
+        });
+        
     } catch (error) {
-        console.log(error);
-        res.status(500).json({ error: "Error al crear la preferencia" });
+        console.error('❌ Error creando preferencia:', error);
+        
+        res.status(500).json({ 
+            error: "Error al crear la preferencia",
+            details: error.message
+        });
     }
 };
+
+const createPreference = async (req, res) => {
+    const nombreTienda = process.env.STORE_NAME || 'Mi Tienda';
+    
+    try {
+        const body = {
+            items: [
+                {
+                    title: `Pedido de ${nombreTienda}`,
+                    quantity: 1,
+                    unit_price: Number(req.body.total),
+                    currency_id: "ARS"
+                }
+            ],
+            // ✅ URLs sin auto_return (déjalo que maneje MercadoPago)
+            back_urls: {
+                success: "http://localhost:3000/confirmacion",
+                failure: "http://localhost:3000/confirmacion", 
+                pending: "http://localhost:3000/confirmacion"
+            }
+            // ⭐ QUITAR auto_return completamente
+        };
+
+        console.log('🏪 Creando preferencia para:', nombreTienda);
+        console.log('💰 Total:', req.body.total);
+
+        const preference = new mercadopago.Preference(client);
+        const result = await preference.create({ body });
+        
+        console.log('✅ Preferencia creada exitosamente:', result.id);
+        
+        res.json({ 
+            id: result.id,
+            init_point: result.init_point,
+            sandbox_init_point: result.sandbox_init_point
+        });
+        
+    } catch (error) {
+        console.error('❌ Error creando preferencia:', error);
+        res.status(500).json({ 
+            error: "Error al crear la preferencia",
+            details: error.message
+        });
+    }
+};
+
 
 // VARIABLES DE ENTORNO (mantener igual)
 const variablesEnv = (req, res) => {
@@ -519,7 +851,7 @@ const MailPedidoRealizado = async (req, res) => {
                                .replace(/{{storeMail}}/g, storeMail)
                                .replace(/{{storePhone}}/g, storePhone);
 
-    let transporter = nodemailer.createTransporter({
+    let transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
         port: 587,
         secure: false,
@@ -1138,6 +1470,8 @@ const serveInternalImage = (req, res) => {
     const imageStream = fs.createReadStream(imagePath);
     imageStream.pipe(res);
 };
+
+
 
 module.exports = {
     articulosOferta,
