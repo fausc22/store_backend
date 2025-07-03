@@ -31,10 +31,10 @@ const logApp = (message, level = 'info', module = 'APP') => {
 // ==============================================
 const allowedOrigins = [
     'http://localhost:3000',
-    'https://rsoftware.com.ar',
-    'https://rsoftware.com.ar/tienda',
-    'http://rsoftware.com.ar',
-    'http://rsoftware.com.ar/tienda',
+    'https://www.rsoftware.com.ar',
+    'https://www.rsoftware.com.ar/tienda',
+    'http://www.rsoftware.com.ar',
+    'http://www.rsoftware.com.ar/tienda',
 ];
 
 const corsOptions = {

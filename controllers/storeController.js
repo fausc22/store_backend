@@ -29,10 +29,19 @@ const logController = (message, level = 'info', operation = 'CONTROLLER') => {
 // ==============================================
 // FUNCIONES HELPER OPTIMIZADAS
 // ==============================================
-const getPrecioColumn = () => {
-    const ivaValue = parseInt(process.env.IVA) || 0;
-    return `PRECIO_SIN_IVA_${ivaValue}`;
-};
+// Función segura para obtener la columna de precio sin IVA
+function getPrecioColumn() {
+    const iva = parseInt(process.env.IVA, 10);
+    const validColumns = [0, 1, 2, 3, 4];
+
+    if (!validColumns.includes(iva)) {
+        return 'PRECIO_SIN_IVA'; // fallback seguro
+    }
+    console.log(`Usando columna de precio: ${iva === 0 ? 'PRECIO_SIN_IVA' : `PRECIO_SIN_IVA_${iva}`}`);
+    return iva === 0 ? 'PRECIO_SIN_IVA' : `PRECIO_SIN_IVA_${iva}`;
+    
+}
+
 
 const createPaginatedResponse = (data, page, limit, totalCount) => {
     const totalPages = Math.ceil(totalCount / limit);
@@ -153,57 +162,64 @@ const articulosDestacados = asyncHandler(async (req, res) => {
 // PRODUCTOS PRINCIPALES CON PAGINACIÓN OPTIMIZADA
 const productosMain = asyncHandler(async (req, res) => {
     const startTime = Date.now();
-    const { page, limit, offset } = validatePaginationParams(req);
-    
+
+    let page = Number(req.query.page);
+    let limit = Number(req.query.limit);
+
+    if (!Number.isInteger(page) || page < 1) page = 1;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) limit = 30;
+
+    const offset = (page - 1) * limit;
+
     logController(`Obteniendo productos principales - Página ${page}, Límite ${limit}`, 'info', 'PRODUCTOS_MAIN');
-    
+
     try {
         const precioColumn = getPrecioColumn();
+        console.log('Usando columna de precio:', precioColumn);
 
-        // Consulta optimizada con count en una sola query cuando es posible
+        const countQuery = `SELECT COUNT(*) as total FROM articulo WHERE HABILITADO = 'S'`;
+
+        const productosQuery = `
+            SELECT 
+                CODIGO_BARRA,
+                COD_INTERNO,
+                COD_IVA,
+                ${precioColumn} AS PRECIO,
+                COSTO,
+                porc_impint,
+                COD_DPTO,
+                PESABLE,
+                STOCK,
+                art_desc_vta,
+                HABILITADO
+            FROM articulo 
+            WHERE HABILITADO = 'S'
+            ORDER BY ${precioColumn} DESC 
+            LIMIT ${limit} OFFSET ${offset}
+        `;
+
         const [countResult, products] = await Promise.all([
-            executeQuery(
-                `SELECT COUNT(*) as total FROM articulo WHERE HABILITADO = 'S'`,
-                [],
-                'COUNT_PRODUCTOS'
-            ),
-            executeQuery(
-                `SELECT 
-                    CODIGO_BARRA,
-                    COD_INTERNO,
-                    COD_IVA,
-                    ${precioColumn} AS PRECIO,
-                    COSTO,
-                    porc_impint,
-                    COD_DPTO,
-                    PESABLE,
-                    STOCK,
-                    art_desc_vta,
-                    HABILITADO
-                FROM articulo 
-                WHERE HABILITADO = 'S'
-                ORDER BY ${precioColumn} DESC 
-                LIMIT ? OFFSET ?`,
-                [limit, offset],
-                'PRODUCTOS_MAIN'
-            )
+            executeQuery(countQuery, [], 'COUNT_PRODUCTOS'),
+            executeQuery(productosQuery, [], 'PRODUCTOS_MAIN')
         ]);
 
         const totalCount = countResult[0].total;
         const response = createPaginatedResponse(products, page, limit, totalCount);
-        
+
         const duration = Date.now() - startTime;
         logController(`✅ ${products.length} productos principales obtenidos (${duration}ms) - Total: ${totalCount}`, 'success', 'PRODUCTOS_MAIN');
-        
+
         res.json(response);
     } catch (error) {
         logController(`❌ Error obteniendo productos principales: ${error.message}`, 'error', 'PRODUCTOS_MAIN');
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Error obteniendo productos principales',
             timestamp: new Date().toISOString()
         });
     }
 });
+
+
 
 // FILTRADO POR CATEGORÍAS OPTIMIZADO
 const filtradoCategorias = asyncHandler(async (req, res) => {
@@ -216,41 +232,41 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
     if (!categoryName || categoryName.trim().length === 0) {
         return res.status(400).json({ error: 'Nombre de categoría requerido' });
     }
-    
+
     try {
         const precioColumn = getPrecioColumn();
 
+        const countQuery = `
+            SELECT COUNT(*) as total 
+            FROM articulo ar 
+            INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
+            WHERE c.NOM_CLASIF = ? AND ar.HABILITADO = 'S'
+        `;
+
+        const productosQuery = `
+            SELECT 
+                ar.CODIGO_BARRA,
+                ar.COD_INTERNO,
+                ar.COD_IVA,
+                ar.${precioColumn} AS PRECIO,
+                ar.COSTO,
+                ar.porc_impint,
+                ar.COD_DPTO,
+                ar.PESABLE,
+                ar.STOCK,
+                ar.art_desc_vta,
+                c.NOM_CLASIF as categoria_nombre
+            FROM articulo ar 
+            INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
+            WHERE c.NOM_CLASIF = ? 
+            AND ar.HABILITADO = 'S'
+            ORDER BY ar.art_desc_vta ASC
+            LIMIT ${limit} OFFSET ${offset}
+        `;
+
         const [countResult, products] = await Promise.all([
-            executeQuery(
-                `SELECT COUNT(*) as total 
-                FROM articulo ar 
-                INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
-                WHERE c.NOM_CLASIF = ? AND ar.HABILITADO = 'S'`,
-                [categoryName],
-                'COUNT_CATEGORIA'
-            ),
-            executeQuery(
-                `SELECT 
-                    ar.CODIGO_BARRA,
-                    ar.COD_INTERNO,
-                    ar.COD_IVA,
-                    ar.${precioColumn} AS PRECIO,
-                    ar.COSTO,
-                    ar.porc_impint,
-                    ar.COD_DPTO,
-                    ar.PESABLE,
-                    ar.STOCK,
-                    ar.art_desc_vta,
-                    c.NOM_CLASIF as categoria_nombre
-                FROM articulo ar 
-                INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
-                WHERE c.NOM_CLASIF = ? 
-                AND ar.HABILITADO = 'S'
-                ORDER BY ar.art_desc_vta ASC
-                LIMIT ? OFFSET ?`,
-                [categoryName, limit, offset],
-                'FILTRO_CATEGORIA'
-            )
+            executeQuery(countQuery, [categoryName], 'COUNT_CATEGORIA'),
+            executeQuery(productosQuery, [categoryName], 'FILTRO_CATEGORIA')
         ]);
 
         const totalCount = countResult[0].total;
@@ -268,6 +284,7 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
         });
     }
 });
+
 
 // BÚSQUEDA DE PRODUCTOS OPTIMIZADA
 const buscarProductos = asyncHandler(async (req, res) => {
@@ -289,41 +306,41 @@ const buscarProductos = asyncHandler(async (req, res) => {
         const searchPattern = `%${searchTerm}%`;
         const exactStart = `${searchTerm}%`;
 
+        const countQuery = `
+            SELECT COUNT(*) as total 
+            FROM articulo
+            WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
+            AND HABILITADO = 'S'
+        `;
+
+        const productosQuery = `
+            SELECT 
+                CODIGO_BARRA,
+                COD_INTERNO,
+                COD_IVA,
+                ${precioColumn} AS PRECIO,
+                COSTO,
+                porc_impint,
+                COD_DPTO,
+                PESABLE,
+                STOCK,
+                art_desc_vta
+            FROM articulo
+            WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
+            AND HABILITADO = 'S'
+            ORDER BY 
+                CASE 
+                    WHEN art_desc_vta LIKE ? THEN 1
+                    WHEN CODIGO_BARRA LIKE ? THEN 2
+                    ELSE 3
+                END,
+                art_desc_vta ASC
+            LIMIT ${limit} OFFSET ${offset}
+        `;
+
         const [countResult, products] = await Promise.all([
-            executeQuery(
-                `SELECT COUNT(*) as total 
-                FROM articulo
-                WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
-                AND HABILITADO = 'S'`,
-                [searchPattern, searchPattern, searchPattern],
-                'COUNT_BUSQUEDA'
-            ),
-            executeQuery(
-                `SELECT 
-                    CODIGO_BARRA,
-                    COD_INTERNO,
-                    COD_IVA,
-                    ${precioColumn} AS PRECIO,
-                    COSTO,
-                    porc_impint,
-                    COD_DPTO,
-                    PESABLE,
-                    STOCK,
-                    art_desc_vta
-                FROM articulo
-                WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
-                AND HABILITADO = 'S'
-                ORDER BY 
-                    CASE 
-                        WHEN art_desc_vta LIKE ? THEN 1
-                        WHEN CODIGO_BARRA LIKE ? THEN 2
-                        ELSE 3
-                    END,
-                    art_desc_vta ASC
-                LIMIT ? OFFSET ?`,
-                [searchPattern, searchPattern, searchPattern, exactStart, exactStart, limit, offset],
-                'BUSQUEDA'
-            )
+            executeQuery(countQuery, [searchPattern, searchPattern, searchPattern], 'COUNT_BUSQUEDA'),
+            executeQuery(productosQuery, [searchPattern, searchPattern, searchPattern, exactStart, exactStart], 'BUSQUEDA')
         ]);
 
         const totalCount = countResult[0].total;
@@ -341,6 +358,7 @@ const buscarProductos = asyncHandler(async (req, res) => {
         });
     }
 });
+
 
 // OBTENER CATEGORÍAS OPTIMIZADA
 const obtenerCategorias = asyncHandler(async (req, res) => {
@@ -817,62 +835,58 @@ const nuevoPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // CORREGIDO: Insertar pedido principal usando nombres correctos de campos
+        // Insertar pedido principal (tu código existente)
         const insertPedidoQuery = `
-            INSERT INTO pedidos 
-            (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local) 
-            VALUES 
-            (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pedidos (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
-
         const pedidoValues = [
-            cliente, 
-            direccion_cliente, 
-            telefono_cliente, 
-            email_cliente, 
-            cantidad_productos, 
-            monto_total, 
-            costo_envio, 
-            medio_pago || 'No especificado', 
-            estado || 'pendiente', 
+            cliente,
+            direccion_cliente,
+            telefono_cliente,
+            email_cliente,
+            cantidad_productos,
+            monto_total,
+            costo_envio,
+            medio_pago || 'No especificado',
+            estado || 'pendiente',
             notas_local
         ];
-
         const pedidoResult = await executeQuery(insertPedidoQuery, pedidoValues, 'INSERT_PEDIDO');
         const pedidoId = pedidoResult.insertId;
 
-        // Insertar productos del pedido
-        const insertProductoQuery = `
-            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio) 
-            VALUES ?
-        `;
+        // --- INICIO DE LA MODIFICACIÓN PARA INSERTAR PRODUCTOS ---
+        if (productos && productos.length > 0) {
+            // Genera una cadena de '(?, ?, ?, ?, ?)' por cada producto
+            const valuePlaceholders = productos.map(() => '(?, ?, ?, ?, ?)').join(', ');
+            
+            const insertProductoQuery = `
+                INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio)
+                VALUES ${valuePlaceholders}
+            `;
 
-        const productosValues = productos.map(producto => [
-            pedidoId,
-            producto.codigo_barra,
-            producto.nombre_producto,
-            producto.cantidad,
-            producto.precio
-        ]);
+            // Aplanar el array de arrays de productos a un solo array de valores
+            // Esto es necesario para que executeQuery reciba todos los parámetros en una lista plana
+            const flattenedProductosValues = productos.reduce((acc, producto) => {
+                acc.push(
+                    pedidoId,
+                    producto.codigo_barra,
+                    producto.nombre_producto,
+                    producto.cantidad,
+                    producto.precio
+                );
+                return acc;
+            }, []);
 
-        await executeQuery(insertProductoQuery, [productosValues], 'INSERT_PRODUCTOS_PEDIDO');
+            await executeQuery(insertProductoQuery, flattenedProductosValues, 'INSERT_PRODUCTOS_PEDIDO');
+        }
+        // --- FIN DE LA MODIFICACIÓN ---
 
         logController(`✅ Pedido creado exitosamente - ID: ${pedidoId}, Cliente: ${cliente}`, 'success', 'PEDIDOS');
-
-        res.json({ 
-            success: true, 
-            message: 'Pedido creado correctamente',
-            pedido_id: pedidoId,
-            timestamp: new Date().toISOString()
-        });
-
+        res.json({ success: true, message: 'Pedido creado correctamente', pedido_id: pedidoId, timestamp: new Date().toISOString() });
     } catch (error) {
         logController(`❌ Error creando pedido para ${cliente}: ${error.message}`, 'error', 'PEDIDOS');
-        res.status(500).json({ 
-            error: 'Error al crear el pedido',
-            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-            timestamp: new Date().toISOString()
-        });
+        res.status(500).json({ error: 'Error al crear el pedido', details: process.env.NODE_ENV !== 'production' ? error.message : undefined, timestamp: new Date().toISOString() });
     }
 });
 
@@ -943,13 +957,13 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
                                    .replace(/{{storeMail}}/g, storeMail)
                                    .replace(/{{storePhone}}/g, storePhone);
 
-        let transporter = nodemailer.createTransporter({
+        let transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
             port: 587,
             secure: false,
             auth: {
-                user: 'faausc@gmail.com',
-                pass: 'qkbjcnmfgxoljgln'
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
             },
             tls: {
                 rejectUnauthorized: false,
