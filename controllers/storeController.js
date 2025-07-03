@@ -26,8 +26,6 @@ const logController = (message, level = 'info', operation = 'CONTROLLER') => {
     }
 };
 
-
-
 // ==============================================
 // FUNCIONES HELPER OPTIMIZADAS
 // ==============================================
@@ -35,7 +33,6 @@ const getPrecioColumn = () => {
     const ivaValue = parseInt(process.env.IVA) || 0;
     return `PRECIO_SIN_IVA_${ivaValue}`;
 };
-
 
 const createPaginatedResponse = (data, page, limit, totalCount) => {
     const totalPages = Math.ceil(totalCount / limit);
@@ -57,8 +54,6 @@ const createPaginatedResponse = (data, page, limit, totalCount) => {
 const asyncHandler = (fn) => (req, res, next) => {
     Promise.resolve(fn(req, res, next)).catch(next);
 };
-
-
 
 // Función de validación de parámetros
 const validatePaginationParams = (req) => {
@@ -822,7 +817,7 @@ const nuevoPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Insertar pedido principal
+        // CORREGIDO: Insertar pedido principal usando nombres correctos de campos
         const insertPedidoQuery = `
             INSERT INTO pedidos 
             (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local) 

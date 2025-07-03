@@ -1,4 +1,4 @@
-// routes/adminRoutes.js - VERSIÓN OPTIMIZADA
+
 const express = require('express');
 const adminController = require('../controllers/adminController');
 const router = express.Router();

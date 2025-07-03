@@ -1,4 +1,4 @@
-// controllers/adminController.js - VERSIÓN OPTIMIZADA
+// controllers/adminController.js - VERSIÓN CORREGIDA PARA BD
 const { executeQuery, logConnection } = require('./db');
 const axios = require('axios');
 const mercadopago = require('mercadopago');
@@ -181,7 +181,7 @@ const saveConfig = asyncHandler(async (req, res) => {
 });
 
 // ==============================================
-// GESTIÓN DE PEDIDOS OPTIMIZADA
+// GESTIÓN DE PEDIDOS OPTIMIZADA - CORREGIDA
 // ==============================================
 
 const pedidosPendientes = asyncHandler(async (req, res) => {
@@ -191,7 +191,7 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
     try {
         const query = `
             SELECT 
-                id, 
+                id_pedido, 
                 fecha, 
                 cliente, 
                 direccion_cliente, 
@@ -204,7 +204,7 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
                 estado,
                 notas_local
             FROM pedidos 
-            WHERE estado IN ('PENDIENTE', 'En proceso') 
+            WHERE estado IN ('pendiente', 'En proceso') 
             ORDER BY fecha DESC
         `;
 
@@ -230,7 +230,7 @@ const pedidosEntregados = asyncHandler(async (req, res) => {
     try {
         const query = `
             SELECT 
-                id, 
+                id_pedido, 
                 fecha, 
                 cliente, 
                 direccion_cliente, 
@@ -243,7 +243,7 @@ const pedidosEntregados = asyncHandler(async (req, res) => {
                 estado,
                 notas_local
             FROM pedidos 
-            WHERE estado = 'ENTREGADO'
+            WHERE estado = 'entregado'
             ORDER BY fecha DESC
         `;
 
@@ -277,7 +277,7 @@ const productosPedido = asyncHandler(async (req, res) => {
 
     try {
         const query = `
-            SELECT id, codigo_barra, nombre_producto, cantidad, precio, (cantidad * precio) as subtotal
+            SELECT id, codigo_barra, nombre_producto, cantidad, precio, subtotal
             FROM pedidos_contenido
             WHERE id_pedido = ?
             ORDER BY id
@@ -312,7 +312,7 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
     }
 
     try {
-        const query = `UPDATE pedidos SET estado = ? WHERE id = ?`;
+        const query = `UPDATE pedidos SET estado = ? WHERE id_pedido = ?`;
         const result = await executeQuery(query, [estado, pedidoId], 'UPDATE_ESTADO_PEDIDO');
         
         if (result.affectedRows === 0) {
@@ -360,7 +360,7 @@ const eliminarPedido = asyncHandler(async (req, res) => {
 
         // Luego eliminar el pedido
         const result = await executeQuery(
-            `DELETE FROM pedidos WHERE id = ?`,
+            `DELETE FROM pedidos WHERE id_pedido = ?`,
             [pedidoId],
             'DELETE_PEDIDO'
         );
@@ -389,7 +389,7 @@ const eliminarPedido = asyncHandler(async (req, res) => {
 });
 
 // ==============================================
-// GESTIÓN DE PRODUCTOS OPTIMIZADA
+// GESTIÓN DE PRODUCTOS OPTIMIZADA - CORREGIDA
 // ==============================================
 
 const buscarProductoEnPedido = asyncHandler(async (req, res) => {
@@ -406,24 +406,32 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        const precioColumn = `PRECIO_SIN_IVA_${parseInt(process.env.IVA) || 0}`;
+        // Usar la columna de precio correcta según IVA configurado
+        const ivaLevel = parseInt(process.env.IVA) || 0;
+        let precioColumn = 'PRECIO_SIN_IVA';
+        
+        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
+        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
+        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
+        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
         
         const query = `
             SELECT 
-                art_desc_vta AS nombre, 
+                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
                 CODIGO_BARRA AS codigo_barra, 
                 COSTO AS costo, 
                 ${precioColumn} AS precio, 
                 COD_DPTO AS categoria,
                 STOCK AS stock
             FROM articulo 
-            WHERE art_desc_vta LIKE ? 
+            WHERE (art_desc_vta LIKE ? OR NOMBRE LIKE ? OR CODIGO_BARRA LIKE ?)
             AND HABILITADO = 'S'
-            ORDER BY art_desc_vta ASC
+            ORDER BY COALESCE(art_desc_vta, NOMBRE) ASC
             LIMIT 50
         `;
         
-        const results = await executeQuery(query, [`%${searchTerm}%`], 'BUSCAR_PRODUCTOS');
+        const searchPattern = `%${searchTerm}%`;
+        const results = await executeQuery(query, [searchPattern, searchPattern, searchPattern], 'BUSCAR_PRODUCTOS');
         
         const duration = Date.now() - startTime;
         logAdmin(`✅ ${results.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'PRODUCTOS');
@@ -454,7 +462,7 @@ const actualizarInfoProducto = asyncHandler(async (req, res) => {
     try {
         const query = `
             UPDATE articulo 
-            SET art_desc_vta = ?, costo = ?, precio = ?, precio_sin_iva = ?, precio_sin_iva_4 = ?, COD_DPTO = ? 
+            SET art_desc_vta = ?, COSTO = ?, PRECIO = ?, PRECIO_SIN_IVA = ?, PRECIO_SIN_IVA_4 = ?, COD_DPTO = ? 
             WHERE CODIGO_BARRA = ?
         `;
         
@@ -540,7 +548,7 @@ const actualizarPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        const query = `UPDATE pedidos SET monto_total = ?, cantidad_productos = ? WHERE id = ?`;
+        const query = `UPDATE pedidos SET monto_total = ?, cantidad_productos = ? WHERE id_pedido = ?`;
         const result = await executeQuery(query, [monto_total, cantidad_productos, pedidoId], 'UPDATE_PEDIDO');
 
         if (result.affectedRows === 0) {
@@ -590,7 +598,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
         const updateQuery = `
             UPDATE pedidos 
             SET monto_total = (
-                SELECT SUM(cantidad * precio) 
+                SELECT SUM(subtotal) 
                 FROM pedidos_contenido 
                 WHERE id_pedido = ?
             ),
@@ -599,7 +607,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
                 FROM pedidos_contenido 
                 WHERE id_pedido = ?
             )
-            WHERE id = ?
+            WHERE id_pedido = ?
         `;
 
         await executeQuery(updateQuery, [id_pedido, id_pedido, id_pedido], 'UPDATE_TOTALES_PEDIDO');
@@ -658,7 +666,7 @@ const eliminarProducto = asyncHandler(async (req, res) => {
 });
 
 // ==============================================
-// GESTIÓN DE OFERTAS Y DESTACADOS OPTIMIZADA
+// GESTIÓN DE OFERTAS Y DESTACADOS - CORREGIDA
 // ==============================================
 
 const articulosOferta = asyncHandler(async (req, res) => {
@@ -728,13 +736,25 @@ const agregarArticuloOferta = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Verificar si el artículo existe en la tabla principal
+        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
+        
+        if (checkResult[0].count === 0) {
+            return res.status(404).json({ 
+                error: 'El artículo no existe en el inventario principal',
+                timestamp: new Date().toISOString()
+            });
+        }
+
         const query = `
             INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
-            VALUES (?, ?, ?, ?, 1, 1)
+            VALUES (?, ?, ?, ?, '1', 1)
             ON DUPLICATE KEY UPDATE 
                 PRECIO = VALUES(PRECIO), 
                 PRECIO_DESC = VALUES(PRECIO_DESC),
-                activo = 1
+                activo = 1,
+                cat = '1'
         `;
 
         await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_OFERTA');
@@ -767,13 +787,25 @@ const agregarArticuloDest = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Verificar si el artículo existe en la tabla principal
+        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
+        
+        if (checkResult[0].count === 0) {
+            return res.status(404).json({ 
+                error: 'El artículo no existe en el inventario principal',
+                timestamp: new Date().toISOString()
+            });
+        }
+
         const query = `
             INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
-            VALUES (?, ?, ?, ?, 2, 1)
+            VALUES (?, ?, ?, ?, '2', 1)
             ON DUPLICATE KEY UPDATE 
                 PRECIO = VALUES(PRECIO), 
                 PRECIO_DESC = VALUES(PRECIO_DESC),
-                activo = 1
+                activo = 1,
+                cat = '2'
         `;
 
         await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_DESTACADO');
@@ -1082,7 +1114,7 @@ const MailPedidoEnCamino = asyncHandler(async (req, res) => {
 const actualizarEstadoPedidoEnCamino = actualizarEstadoPedidoProcesado;
 
 // ==============================================
-// ESTADÍSTICAS OPTIMIZADAS
+// ESTADÍSTICAS OPTIMIZADAS - CORREGIDAS
 // ==============================================
 
 const getWhereClause = (fechaInicio, fechaFin) => {
@@ -1120,7 +1152,7 @@ const obtenerStats = asyncHandler(async (req, res) => {
             executeQuery(
                 `SELECT pc.nombre_producto, SUM(pc.cantidad) as cantidad 
                  FROM pedidos_contenido pc 
-                 JOIN pedidos p ON pc.id_pedido = p.id
+                 JOIN pedidos p ON pc.id_pedido = p.id_pedido
                  ${whereClause}
                  GROUP BY pc.nombre_producto
                  ORDER BY cantidad DESC 
