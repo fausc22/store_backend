@@ -1,801 +1,1267 @@
-const db = require('./db');
+// controllers/adminController.js - VERSIÓN OPTIMIZADA
+const { executeQuery, logConnection } = require('./db');
 const axios = require('axios');
 const mercadopago = require('mercadopago');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
 const nodemailer = require('nodemailer');
-const { create } = require('domain');
 const dotenv = require('dotenv');
+require('dotenv').config();
 
-
-const usernameEnv = process.env.USER_NAME; // Usuario preconfigurado
-const passwordEnv = process.env.PASSWORD; // Contraseña encriptada
-
-const loginCheck = (req, res) => {
-    const { username, password } = req.body;
-
-    // Validar usuario
-    if (username !== usernameEnv) {
-        return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
-    }
-
-    // Validar contraseña
-    if (password !== passwordEnv) {
-        return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
-    }
-
+// ==============================================
+// SISTEMA DE LOGS PARA CONTROLADOR ADMIN
+// ==============================================
+const logAdmin = (message, level = 'info', operation = 'ADMIN') => {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] [${operation}-${level.toUpperCase()}] ${message}`;
     
-
-    res.json({ message: 'Login exitoso'});
-};
-
-
-const obtenerConfig = (req, res) => {
-    const envPath = path.resolve(__dirname, '../.env');
-    const config = dotenv.parse(fs.readFileSync(envPath));
-
-    const response = {
-        storeName: config.STORE_NAME,
-        storeAddress: config.STORE_ADDRESS,
-        storePhone: config.STORE_PHONE,
-        storeDescription: config.STORE_DESCRIPTION,
-        storeInstagram: config.STORE_INSTAGRAM,
-        storeEmail: config.STORE_EMAIL,
-        storeDeliveryBase: config.STORE_DELIVERY_BASE,
-        storeDeliveryKm: config.STORE_DELIVERY_KM,
-        mercadoPagoToken: config.MERCADOPAGO_ACCESS_TOKEN,
-        iva: config.IVA,
-        pageStatus: config.PAGE_STATUS,
-        userName: config.USER_NAME,
-        passWord: config.PASSWORD
-    };
-
-    res.json(response);
-};
-
-const saveConfig = (req, res) => {
-    const config = req.body;
-    const envPath = path.resolve(__dirname, '../.env');
-    const existingConfig = dotenv.parse(fs.readFileSync(envPath));
-
-    // Actualizar solo las variables que están en el request
-    existingConfig.STORE_NAME = config.storeName || existingConfig.STORE_NAME;
-    existingConfig.STORE_ADDRESS = config.storeAddress || existingConfig.STORE_ADDRESS;
-    existingConfig.MERCADOPAGO_ACCESS_TOKEN = config.mercadoPagoToken || existingConfig.MERCADOPAGO_ACCESS_TOKEN;
-    existingConfig.IVA = config.iva || existingConfig.IVA;
-    existingConfig.PAGE_STATUS = config.pageStatus || existingConfig.PAGE_STATUS;
-    existingConfig.USER_NAME = config.userName || existingConfig.USER_NAME;
-    existingConfig.PASSWORD = config.passWord || existingConfig.PASSWORD;
-
-    // Crear el contenido del archivo .env
-    const updatedConfig = Object.keys(existingConfig).map(key => `${key}=${existingConfig[key]}`).join('\n');
-
-    fs.writeFile(envPath, updatedConfig, (err) => {
-        if (err) {
-            console.error('Error al guardar el archivo de configuración', err);
-            return res.status(500).send('Error al guardar el archivo de configuración');
-        }
-
-        res.send('Configuración guardada exitosamente');
-    });
-};
-
-
-const login = (req, res) => {
-    const { username, password } = req.body;
-    const envPath = path.resolve(__dirname, '../.env');
-    const config = dotenv.parse(fs.readFileSync(envPath));
-
-    const envUsername = config.USER_NAME;
-    const envPassword = config.PASSWORD;
-
-    if (username === envUsername && password === envPassword) {
-        res.status(200).json({ message: 'Solicitud aprobada' });
+    if (level === 'error') {
+        console.error('\x1b[31m%s\x1b[0m', logMessage);
+    } else if (level === 'warn') {
+        console.warn('\x1b[33m%s\x1b[0m', logMessage);
+    } else if (level === 'success') {
+        console.log('\x1b[32m%s\x1b[0m', logMessage);
     } else {
-        res.status(401).json({ message: 'Solicitud denegada. Si olvido sus datos, consulte con el proveedor.' });
+        console.log('\x1b[36m%s\x1b[0m', logMessage);
     }
 };
 
-
-const pedidosPendientes = (req, res) => {
-    const query = `
-        SELECT 
-            id, 
-            fecha, 
-            cliente, 
-            direccion_cliente, 
-            telefono_cliente, 
-            email_cliente, 
-            cantidad_productos, 
-            monto_total,
-            costo_envio, 
-            medio_pago, 
-            estado,
-            notas_local
-        FROM pedidos WHERE estado  = 'PENDIENTE' OR estado  = 'En proceso' 
-        `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error al obtener los pedidos pendientes:', err);
-            res.status(500).send('Error al obtener los pedidos pendientes');
-        } else {
-            res.json(results);
-        }
-    });
+// Wrapper para manejo de errores async
+const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-const pedidosEntregados = (req, res) => {
-    const query = `
-        SELECT 
-            id, 
-            fecha, 
-            cliente, 
-            direccion_cliente, 
-            telefono_cliente, 
-            email_cliente, 
-            cantidad_productos, 
-            monto_total,
-            costo_envio, 
-            medio_pago, 
-            estado,
-            notas_local
-        FROM pedidos WHERE estado = 'ENTREGADO'
-        `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error al obtener los pedidos pendientes:', err);
-            res.status(500).send('Error al obtener los pedidos pendientes');
-        } else {
-            res.json(results);
-        }
-    });
-};
+// ==============================================
+// AUTENTICACIÓN Y CONFIGURACIÓN
+// ==============================================
 
-const productosPedido = (req, res) => {
-    const pedidoId = req.params.id;
-
-    // Consulta SQL para obtener productos del pedido
-    const query = `
-        SELECT id, codigo_barra, nombre_producto, cantidad, precio FROM pedidos_contenido
-        WHERE id_pedido = ?
-    `;
+const loginCheck = asyncHandler(async (req, res) => {
+    const { username, password } = req.body;
+    const startTime = Date.now();
     
-    db.query(query, [pedidoId], (err, results) => {
-        if (err) {
-            console.error('Error al obtener productos del pedido:', err);
-            return res.status(500).json({ error: 'Error al obtener productos del pedido' });
+    logAdmin(`Intento de login para usuario: ${username}`, 'info', 'AUTH');
+    
+    // Validaciones básicas
+    if (!username || !password) {
+        logAdmin('Login fallido: Credenciales incompletas', 'warn', 'AUTH');
+        return res.status(400).json({ 
+            message: 'Usuario y contraseña son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const usernameEnv = process.env.USER_NAME;
+        const passwordEnv = process.env.PASSWORD;
+
+        if (!usernameEnv || !passwordEnv) {
+            logAdmin('Error: Variables de entorno de autenticación no configuradas', 'error', 'AUTH');
+            return res.status(500).json({ 
+                message: 'Error de configuración del servidor',
+                timestamp: new Date().toISOString()
+            });
         }
+
+        // Validar credenciales
+        if (username !== usernameEnv || password !== passwordEnv) {
+            const duration = Date.now() - startTime;
+            logAdmin(`Login fallido para ${username} (${duration}ms)`, 'warn', 'AUTH');
+            return res.status(401).json({ 
+                message: 'Usuario o contraseña incorrectos',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Login exitoso para ${username} (${duration}ms)`, 'success', 'AUTH');
+        
+        res.json({ 
+            message: 'Login exitoso',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logAdmin(`❌ Error en login (${duration}ms): ${error.message}`, 'error', 'AUTH');
+        res.status(500).json({ 
+            message: 'Error interno del servidor',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const obtenerConfig = asyncHandler(async (req, res) => {
+    logAdmin('Obteniendo configuración del .env', 'info', 'CONFIG');
+    
+    try {
+        const envPath = path.resolve(__dirname, '../.env');
+        const envContent = await fs.readFile(envPath, 'utf8');
+        const config = dotenv.parse(envContent);
+
+        const response = {
+            storeName: config.STORE_NAME,
+            storeAddress: config.STORE_ADDRESS,
+            storePhone: config.STORE_PHONE,
+            storeDescription: config.STORE_DESCRIPTION,
+            storeInstagram: config.STORE_INSTAGRAM,
+            storeEmail: config.STORE_EMAIL,
+            storeDeliveryBase: config.STORE_DELIVERY_BASE,
+            storeDeliveryKm: config.STORE_DELIVERY_KM,
+            mercadoPagoToken: config.MERCADOPAGO_ACCESS_TOKEN,
+            iva: config.IVA,
+            pageStatus: config.PAGE_STATUS,
+            userName: config.USER_NAME,
+            passWord: config.PASSWORD
+        };
+
+        logAdmin('✅ Configuración obtenida exitosamente', 'success', 'CONFIG');
+        res.json(response);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo configuración: ${error.message}`, 'error', 'CONFIG');
+        res.status(500).json({ 
+            error: 'Error al obtener la configuración',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const saveConfig = asyncHandler(async (req, res) => {
+    const config = req.body;
+    
+    logAdmin('Guardando configuración del .env', 'info', 'CONFIG');
+    
+    if (!config || Object.keys(config).length === 0) {
+        return res.status(400).json({ 
+            error: 'Configuración vacía o inválida',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const envPath = path.resolve(__dirname, '../.env');
+        const existingContent = await fs.readFile(envPath, 'utf8');
+        const existingConfig = dotenv.parse(existingContent);
+
+        // Actualizar solo las variables que están en el request
+        const updatedConfig = {
+            ...existingConfig,
+            ...(config.storeName && { STORE_NAME: config.storeName }),
+            ...(config.storeAddress && { STORE_ADDRESS: config.storeAddress }),
+            ...(config.storePhone && { STORE_PHONE: config.storePhone }),
+            ...(config.storeDescription && { STORE_DESCRIPTION: config.storeDescription }),
+            ...(config.storeInstagram && { STORE_INSTAGRAM: config.storeInstagram }),
+            ...(config.storeEmail && { STORE_EMAIL: config.storeEmail }),
+            ...(config.storeDeliveryBase && { STORE_DELIVERY_BASE: config.storeDeliveryBase }),
+            ...(config.storeDeliveryKm && { STORE_DELIVERY_KM: config.storeDeliveryKm }),
+            ...(config.mercadoPagoToken && { MERCADOPAGO_ACCESS_TOKEN: config.mercadoPagoToken }),
+            ...(config.iva && { IVA: config.iva }),
+            ...(config.pageStatus && { PAGE_STATUS: config.pageStatus }),
+            ...(config.userName && { USER_NAME: config.userName }),
+            ...(config.passWord && { PASSWORD: config.passWord })
+        };
+
+        // Crear el contenido del archivo .env
+        const updatedContent = Object.keys(updatedConfig)
+            .map(key => `${key}=${updatedConfig[key]}`)
+            .join('\n');
+
+        await fs.writeFile(envPath, updatedContent, 'utf8');
+        
+        logAdmin('✅ Configuración guardada exitosamente', 'success', 'CONFIG');
+        res.json({ 
+            message: 'Configuración guardada exitosamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error guardando configuración: ${error.message}`, 'error', 'CONFIG');
+        res.status(500).json({ 
+            error: 'Error al guardar la configuración',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// ==============================================
+// GESTIÓN DE PEDIDOS OPTIMIZADA
+// ==============================================
+
+const pedidosPendientes = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo pedidos pendientes', 'info', 'PEDIDOS');
+    
+    try {
+        const query = `
+            SELECT 
+                id, 
+                fecha, 
+                cliente, 
+                direccion_cliente, 
+                telefono_cliente, 
+                email_cliente, 
+                cantidad_productos, 
+                monto_total,
+                costo_envio, 
+                medio_pago, 
+                estado,
+                notas_local
+            FROM pedidos 
+            WHERE estado IN ('PENDIENTE', 'En proceso') 
+            ORDER BY fecha DESC
+        `;
+
+        const results = await executeQuery(query, [], 'PEDIDOS_PENDIENTES');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} pedidos pendientes obtenidos (${duration}ms)`, 'success', 'PEDIDOS');
+        
         res.json(results);
-    });
-};
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo pedidos pendientes: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al obtener los pedidos pendientes',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
+const pedidosEntregados = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo pedidos entregados', 'info', 'PEDIDOS');
+    
+    try {
+        const query = `
+            SELECT 
+                id, 
+                fecha, 
+                cliente, 
+                direccion_cliente, 
+                telefono_cliente, 
+                email_cliente, 
+                cantidad_productos, 
+                monto_total,
+                costo_envio, 
+                medio_pago, 
+                estado,
+                notas_local
+            FROM pedidos 
+            WHERE estado = 'ENTREGADO'
+            ORDER BY fecha DESC
+        `;
 
-const buscarProductoEnPedido = (req, res) => {
-    const searchTerm = req.query.search || '';
-    const query = `
-        SELECT 
-            art_desc_vta AS nombre, 
-            CODIGO_BARRA AS codigo_barra, 
-            COSTO AS costo, 
-            PRECIO AS precio, 
-            PRECIO_SIN_IVA AS precio_sin_iva, 
-            PRECIO_SIN_IVA_4 AS precio_sin_iva_4, 
-            COD_DPTO AS categoria 
-        FROM articulo 
-        WHERE art_desc_vta LIKE ?;
-    `;
-    db.query(query, [`%${searchTerm}%`], (err, results) => {
-        if (err) {
-            console.error('Error al obtener los productos:', err);
-            res.status(500).send('Error al obtener los productos');
-        } else {
-            res.json(results);
+        const results = await executeQuery(query, [], 'PEDIDOS_ENTREGADOS');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} pedidos entregados obtenidos (${duration}ms)`, 'success', 'PEDIDOS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo pedidos entregados: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al obtener los pedidos entregados',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const productosPedido = asyncHandler(async (req, res) => {
+    const pedidoId = req.params.id;
+    const startTime = Date.now();
+    
+    logAdmin(`Obteniendo productos del pedido: ${pedidoId}`, 'info', 'PEDIDOS');
+    
+    if (!pedidoId || isNaN(pedidoId)) {
+        return res.status(400).json({ 
+            error: 'ID de pedido inválido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `
+            SELECT id, codigo_barra, nombre_producto, cantidad, precio, (cantidad * precio) as subtotal
+            FROM pedidos_contenido
+            WHERE id_pedido = ?
+            ORDER BY id
+        `;
+        
+        const results = await executeQuery(query, [pedidoId], 'PRODUCTOS_PEDIDO');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} productos del pedido ${pedidoId} obtenidos (${duration}ms)`, 'success', 'PEDIDOS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo productos del pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al obtener productos del pedido',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
+    const pedidoId = req.params.id;
+    const { estado } = req.body;
+    
+    logAdmin(`Actualizando estado del pedido ${pedidoId} a: ${estado}`, 'info', 'PEDIDOS');
+    
+    if (!pedidoId || !estado) {
+        return res.status(400).json({ 
+            error: 'ID de pedido y estado son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE pedidos SET estado = ? WHERE id = ?`;
+        const result = await executeQuery(query, [estado, pedidoId], 'UPDATE_ESTADO_PEDIDO');
+        
+        if (result.affectedRows === 0) {
+            logAdmin(`❌ Pedido ${pedidoId} no encontrado`, 'warn', 'PEDIDOS');
+            return res.status(404).json({ 
+                error: 'Pedido no encontrado',
+                timestamp: new Date().toISOString()
+            });
         }
-    });
-};
 
+        logAdmin(`✅ Estado del pedido ${pedidoId} actualizado a '${estado}'`, 'success', 'PEDIDOS');
+        res.json({ 
+            success: true, 
+            message: `Estado del pedido actualizado a '${estado}'`,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando estado del pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al actualizar el estado del pedido',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
-// Actualizar un producto en la base de datos
-const actualizarProducto = (req, res) => {
+const eliminarPedido = asyncHandler(async (req, res) => {
+    const pedidoId = req.params.id;
+    
+    logAdmin(`Eliminando pedido: ${pedidoId}`, 'info', 'PEDIDOS');
+    
+    if (!pedidoId || isNaN(pedidoId)) {
+        return res.status(400).json({ 
+            error: 'ID de pedido inválido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Primero eliminar productos del pedido
+        await executeQuery(
+            `DELETE FROM pedidos_contenido WHERE id_pedido = ?`,
+            [pedidoId],
+            'DELETE_PRODUCTOS_PEDIDO'
+        );
+
+        // Luego eliminar el pedido
+        const result = await executeQuery(
+            `DELETE FROM pedidos WHERE id = ?`,
+            [pedidoId],
+            'DELETE_PEDIDO'
+        );
+
+        if (result.affectedRows === 0) {
+            logAdmin(`❌ Pedido ${pedidoId} no encontrado`, 'warn', 'PEDIDOS');
+            return res.status(404).json({ 
+                error: 'Pedido no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Pedido ${pedidoId} eliminado exitosamente`, 'success', 'PEDIDOS');
+        res.json({ 
+            success: true, 
+            message: 'Pedido eliminado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al eliminar el pedido',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// ==============================================
+// GESTIÓN DE PRODUCTOS OPTIMIZADA
+// ==============================================
+
+const buscarProductoEnPedido = asyncHandler(async (req, res) => {
+    const searchTerm = req.query.search?.trim() || '';
+    const startTime = Date.now();
+    
+    logAdmin(`Buscando productos: "${searchTerm}"`, 'info', 'PRODUCTOS');
+    
+    if (searchTerm.length < 2) {
+        return res.status(400).json({ 
+            error: 'Término de búsqueda debe tener al menos 2 caracteres',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const precioColumn = `PRECIO_SIN_IVA_${parseInt(process.env.IVA) || 0}`;
+        
+        const query = `
+            SELECT 
+                art_desc_vta AS nombre, 
+                CODIGO_BARRA AS codigo_barra, 
+                COSTO AS costo, 
+                ${precioColumn} AS precio, 
+                COD_DPTO AS categoria,
+                STOCK AS stock
+            FROM articulo 
+            WHERE art_desc_vta LIKE ? 
+            AND HABILITADO = 'S'
+            ORDER BY art_desc_vta ASC
+            LIMIT 50
+        `;
+        
+        const results = await executeQuery(query, [`%${searchTerm}%`], 'BUSCAR_PRODUCTOS');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'PRODUCTOS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error buscando productos "${searchTerm}": ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al buscar productos',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const actualizarInfoProducto = asyncHandler(async (req, res) => {
+    const productoId = req.params.id;
+    const { nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria } = req.body;
+    
+    logAdmin(`Actualizando producto: ${productoId}`, 'info', 'PRODUCTOS');
+    
+    if (!productoId || !nombre) {
+        return res.status(400).json({ 
+            error: 'ID de producto y nombre son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `
+            UPDATE articulo 
+            SET art_desc_vta = ?, costo = ?, precio = ?, precio_sin_iva = ?, precio_sin_iva_4 = ?, COD_DPTO = ? 
+            WHERE CODIGO_BARRA = ?
+        `;
+        
+        const result = await executeQuery(
+            query, 
+            [nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria, productoId],
+            'UPDATE_PRODUCTO'
+        );
+
+        if (result.affectedRows === 0) {
+            logAdmin(`❌ Producto ${productoId} no encontrado`, 'warn', 'PRODUCTOS');
+            return res.status(404).json({ 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Producto ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
+        res.json({ 
+            success: true, 
+            message: 'Producto actualizado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando producto ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al actualizar el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const actualizarProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
     const { nombre_producto, cantidad, precio } = req.body;
 
-    const query = `UPDATE pedidos_contenido SET nombre_producto = ?, cantidad = ?, precio = ? WHERE id = ?`;
+    logAdmin(`Actualizando producto en pedido: ${productoId}`, 'info', 'PRODUCTOS');
 
-    db.query(query, [nombre_producto, cantidad, precio, productoId], (error, results) => {
-        if (error) {
-            return res.status(500).json({ success: false, message: "Error al actualizar el producto" });
-        }
-
-        res.json({ success: true, message: "Producto actualizado correctamente" });
-    });
-};
-
-// Actualizar el total del pedido en la base de datos
-const actualizarPedido = (req, res) => {
-    const pedidoId = req.params.id;
-    const { monto_total, cantidad_productos } = req.body; // Ahora recibimos también la cantidad de productos
-
-    const query = `UPDATE pedidos SET monto_total = ?, cantidad_productos = ? WHERE id = ?`;
-
-    db.query(query, [monto_total, cantidad_productos, pedidoId], (error, results) => {
-        if (error) {
-            return res.status(500).json({ success: false, message: "Error al actualizar el pedido", error });
-        }
-
-        res.json({ success: true, message: "Pedido actualizado correctamente" });
-    });
-};
-
-
-const eliminarPedido = (req, res) => {
-    const pedidoId = req.params.id;
-    
-
-    const query = `DELETE FROM pedidos WHERE id = ?`;
-
-    db.query(query, [pedidoId], (error, results) => {
-        if (error) {
-            return res.status(500).json({ success: false, message: "Error al eliminar el pedido" });
-        }
-
-        res.json({ success: true, message: "Pedido eliminado correctamente" });
-    });
-};
-
-const eliminarProducto = (req, res) => {
-    const productoId = req.params.id;
-    
-
-    const query = `DELETE FROM pedidos_contenido WHERE id = ?`;
-
-    db.query(query, [productoId], (error, results) => {
-        if (error) {
-            return res.status(500).json({ success: false, message: "Error al eliminar el producto" });
-        }
-
-        res.json({ success: true, message: "Producto eliminado correctamente" });
-    });
-};
-
-
-
-const actualizarInfoProducto = (req, res) => {
-    const productoId = req.params.id;
-    const { nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria } = req.body;
-
-    
-
-    const query = `UPDATE articulo SET art_desc_vta = ?, costo = ?, precio = ?, precio_sin_iva = ?, precio_sin_iva_4 = ?, COD_DPTO = ? WHERE CODIGO_BARRA = ?`;
-
-    db.query(query, [nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria, productoId], (error, results) => {
-        if (error) {
-            console.error("Error en la consulta:", error);
-            return res.status(500).json({ success: false, message: "Error al actualizar el producto" });
-        }
-
-        res.json({ success: true, message: "Producto actualizado correctamente" });
-    });
-};
-
-
-const agregarArticuloOferta = (req, res) => {
-    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
-
-    const query = `
-        INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat) 
-        VALUES (?, ?, ?, ?, 1)
-        ON DUPLICATE KEY UPDATE PRECIO = VALUES(PRECIO), PRECIO_DESC = VALUES(PRECIO_DESC);
-    `;
-
-    db.query(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], (err, result) => {
-        if (err) {
-            console.error("Error al insertar el artículo en oferta:", err);
-            res.status(500).send("Error en el servidor");
-            return;
-        }
-        res.json({ success: true, message: "Artículo agregado a oferta" });
-    });
-};
-
-const actualizarPrecioOferta = (req, res) => {
-    const { CODIGO_BARRA, PRECIO_DESC } = req.body;
-
-    const query = `
-        UPDATE articulo_temp 
-        SET PRECIO_DESC = ? 
-        WHERE CODIGO_BARRA = ?;
-    `;
-
-    db.query(query, [PRECIO_DESC, CODIGO_BARRA], (err, result) => {
-        if (err) {
-            console.error("Error al actualizar el precio de oferta:", err);
-            res.status(500).send("Error en el servidor");
-            return;
-        }
-        res.json({ success: true, message: "Precio de oferta actualizado" });
-    });
-};
-
-const eliminarArticuloOferta = (req, res) => {
-    const { CODIGO_BARRA } = req.params;
-
-    const query = `
-        DELETE FROM articulo_temp 
-        WHERE CODIGO_BARRA = ?;
-    `;
-
-    db.query(query, [CODIGO_BARRA], (err, result) => {
-        if (err) {
-            console.error("Error al eliminar el artículo en oferta:", err);
-            res.status(500).send("Error en el servidor");
-            return;
-        }
-        res.json({ success: true, message: "Artículo eliminado de oferta" });
-    });
-};
-
-const eliminarArticuloDest = (req, res) => {
-    const { CODIGO_BARRA } = req.params;
-
-    const query = `
-        DELETE FROM articulo_temp 
-        WHERE CODIGO_BARRA = ?;
-    `;
-
-    db.query(query, [CODIGO_BARRA], (err, result) => {
-        if (err) {
-            console.error("Error al eliminar el artículo en Destacado:", err);
-            res.status(500).send("Error en el servidor");
-            return;
-        }
-        res.json({ success: true, message: "Artículo eliminado de Destacado" });
-    });
-};
-
-const agregarArticuloDest = (req, res) => {
-    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
-
-    const query = `
-        INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat) 
-        VALUES (?, ?, ?, ?, 2)
-        ON DUPLICATE KEY UPDATE PRECIO = VALUES(PRECIO), PRECIO_DESC = VALUES(PRECIO_DESC);
-    `;
-
-    db.query(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], (err, result) => {
-        if (err) {
-            console.error("Error al insertar el artículo en Destacados:", err);
-            res.status(500).send("Error en el servidor");
-            return;
-        }
-        res.json({ success: true, message: "Artículo agregado a Destacados" });
-    });
-};
-
-
-
-const variablesEnv = (req, res) => {
-    const config = {
-      storeName: process.env.STORE_NAME,
-      storeAddress: process.env.STORE_ADDRESS,
-      storePhone: process.env.STORE_PHONE,
-      storeDescription: process.env.STORE_DESCRIPTION,
-      storeInstagram: process.env.STORE_INSTAGRAM,
-      storeEmail: process.env.STORE_EMAIL,
-      storeDeliveryBase: process.env.STORE_DELIVERY_BASE,
-      storeDeliveryKm: process.env.STORE_DELIVERY_KM,
-      iva: process.env.IVA,
-      pageStatus: process.env.PAGE_STATUS,
-      userName: process.env.USER_NAME,
-      password: process.env.PASSWORD,
-      sessionSecret: process.env.SESSION_SECRET,
-      openCageApiKey: process.env.OPENCAGE_API_KEY,
-      mercadopagoAccessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
-    };
-    res.json(config);
-  };
-
-const MailPedidoProcesado = async (req, res) => {
-    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone } = req.body;
-
-    // Leer el archivo HTML
-    let htmlTemplate = fs.readFileSync(path.join(__dirname, '../resources/email_template/pedido_confirmado.html'), 'utf8');
-
-    let itemsHtml = '';
-    items.forEach(item => {
-        itemsHtml += `<tr>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                ${item.name}
-            </td>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                ${item.quantity}
-            </td>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                $${item.price}
-            </td>
-        </tr>`;
-    });
-
-    // Reemplazar las claves {{}} con los datos
-    htmlTemplate = htmlTemplate.replace(/{{storeName}}/g, storeName)
-                               .replace(/{{name}}/g, name)
-                               .replace(/{{items}}/g, itemsHtml)
-                               .replace(/{{subtotal}}/g, subtotal)
-                               .replace(/{{shippingCost}}/g, shippingCost)
-                               .replace(/{{total}}/g, total)
-                               .replace(/{{storeMail}}/g, storeMail)
-                               .replace(/{{storePhone}}/g, storePhone);
-
-
-    let transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false, // true para port 465, false para port 587
-        auth: {
-           user: 'faausc@gmail.com',
-           pass: 'qkbjcnmfgxoljgln'
-        },
-         tls: {
-            rejectUnauthorized: false, // Esto puede ser necesario si estás teniendo problemas con certificados
-        }
-    });
-
-    let info = await transporter.sendMail({
-        from: storeName + ' - ' + storeMail, // Reemplazar con el nombre y correo de tu tienda
-        to: clientMail, // Dirección de correo del destinatario
-        subject: 'Pedido confirmado con éxito!',
-        html: htmlTemplate,
-        attachments: [
-            {
-                filename: 'logo.jpg', // Reemplazar con la imagen que estás utilizando
-                path: path.join(__dirname, '../resources/img/logo.jpg'),
-                cid: 'logo' // Debe coincidir con el cid en la plantilla HTML
-            }
-        ]
-    });
-
-    
-    
-                    
-};
-
-
-
-
-const actualizarEstadoPedidoProcesado = (req, res) => {
-    const pedidoId = req.params.id;
-    const { estado } = req.body;
-
-    console.log("ID recibido:", pedidoId);
-    console.log("Estado recibido:", estado);
-
-    if (!pedidoId || !estado) {
-        console.error("Error: Faltan datos", { pedidoId, estado });
+    if (!productoId || !nombre_producto || !cantidad || !precio) {
         return res.status(400).json({ 
-            success: false, 
-            message: "Faltan datos: pedidoId o estado no proporcionados." 
+            error: 'Todos los campos son requeridos',
+            timestamp: new Date().toISOString()
         });
     }
 
-    const query = `UPDATE pedidos SET estado = ? WHERE id = ?`;
+    try {
+        const query = `UPDATE pedidos_contenido SET nombre_producto = ?, cantidad = ?, precio = ? WHERE id = ?`;
+        const result = await executeQuery(query, [nombre_producto, cantidad, precio, productoId], 'UPDATE_PRODUCTO_PEDIDO');
 
-    db.query(query, [estado, pedidoId], (error, results) => {
-        if (error) {
-            console.error("Error en la consulta a la base de datos:", error);
-            return res.status(500).json({ 
-                success: false, 
-                message: "Error al actualizar el estado del pedido." 
-            });
-        }
-
-        if (results.affectedRows === 0) {
-            console.error("Pedido no encontrado:", pedidoId);
+        if (result.affectedRows === 0) {
             return res.status(404).json({ 
-                success: false, 
-                message: "Pedido no encontrado." 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
             });
         }
 
-        console.log(`Estado del pedido ${pedidoId} actualizado a '${estado}'`);
+        logAdmin(`✅ Producto en pedido ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
         res.json({ 
             success: true, 
-            message: `Estado del pedido actualizado a '${estado}'.` 
+            message: 'Producto actualizado correctamente',
+            timestamp: new Date().toISOString()
         });
-    });
-};
+    } catch (error) {
+        logAdmin(`❌ Error actualizando producto en pedido ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al actualizar el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
+const actualizarPedido = asyncHandler(async (req, res) => {
+    const pedidoId = req.params.id;
+    const { monto_total, cantidad_productos } = req.body;
 
+    logAdmin(`Actualizando totales del pedido: ${pedidoId}`, 'info', 'PEDIDOS');
 
+    if (!pedidoId || monto_total === undefined || cantidad_productos === undefined) {
+        return res.status(400).json({ 
+            error: 'ID del pedido, monto total y cantidad de productos son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
 
-const MailPedidoEnCamino = async (req, res) => {
-    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
+    try {
+        const query = `UPDATE pedidos SET monto_total = ?, cantidad_productos = ? WHERE id = ?`;
+        const result = await executeQuery(query, [monto_total, cantidad_productos, pedidoId], 'UPDATE_PEDIDO');
 
-    // Leer el archivo HTML
-    let htmlTemplate = fs.readFileSync(path.join(__dirname, '../resources/email_template/pedido_camino.html'), 'utf8');
-
-    let itemsHtml = '';
-    items.forEach(item => {
-        itemsHtml += `<tr>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                ${item.name}
-            </td>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                ${item.quantity}
-            </td>
-            <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
-                $${item.price}
-            </td>
-        </tr>`;
-    });
-
-    // Reemplazar las claves {{}} con los datos
-    htmlTemplate = htmlTemplate.replace(/{{storeName}}/g, storeName)
-                               .replace(/{{name}}/g, name)
-                               .replace(/{{items}}/g, itemsHtml)
-                               .replace(/{{subtotal}}/g, subtotal)
-                               .replace(/{{shippingCost}}/g, shippingCost)
-                               .replace(/{{total}}/g, total)
-                               .replace(/{{storeMail}}/g, storeMail)
-                               .replace(/{{storePhone}}/g, storePhone)
-                               .replace(/{{horarioInicio}}/g, desde)
-                               .replace(/{{horarioFin}}/g, hasta);
-
-
-    let transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false, // true para port 465, false para port 587
-        auth: {
-           user: 'faausc@gmail.com',
-           pass: 'qkbjcnmfgxoljgln'
-        },
-         tls: {
-            rejectUnauthorized: false, // Esto puede ser necesario si estás teniendo problemas con certificados
-        }
-    });
-
-    let info = await transporter.sendMail({
-        from: storeName + ' - ' + storeMail, // Reemplazar con el nombre y correo de tu tienda
-        to: clientMail, // Dirección de correo del destinatario
-        subject: 'Tu pedido esta en camino!',
-        html: htmlTemplate,
-        attachments: [
-            {
-                filename: 'logo.jpg', // Reemplazar con la imagen que estás utilizando
-                path: path.join(__dirname, '../resources/img/logo.jpg'),
-                cid: 'logo' // Debe coincidir con el cid en la plantilla HTML
-            }
-        ]
-    });
-
-    
-    
-                    
-};
-
-
-
-
-const actualizarEstadoPedidoEnCamino = (req, res) => {
-    const pedidoId = req.params.id; // Obtener el ID del pedido desde los parámetros de la URL
-    const { estado } = req.body; // Obtener el nuevo estado desde el cuerpo de la solicitud
-
-    const query = `UPDATE pedidos SET estado = ? WHERE id = ?`;
-
-    db.query(query, [estado, pedidoId], (error, results) => {
-        if (error) {
-            return res.status(500).json({ success: false, message: "Error al actualizar el estado del pedido" });
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Pedido no encontrado',
+                timestamp: new Date().toISOString()
+            });
         }
 
-        if (results.affectedRows === 0) {
-            return res.status(404).json({ success: false, message: "Pedido no encontrado" });
-        }
+        logAdmin(`✅ Totales del pedido ${pedidoId} actualizados exitosamente`, 'success', 'PEDIDOS');
+        res.json({ 
+            success: true, 
+            message: 'Pedido actualizado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al actualizar el pedido',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
-        res.json({ success: true, message: `Estado del pedido actualizado a '${estado}'` });
-    });
-};
-
-
-const agregarProductoAlPedido = (req, res) => {
+const agregarProductoAlPedido = asyncHandler(async (req, res) => {
     const { id_pedido, codigo_barra, nombre_producto, cantidad, precio } = req.body;
-    const subtotal = cantidad * precio;
 
-    const insertProductoQuery = `
-    INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio) 
-    VALUES (?, ?, ?, ?, ?)
-    `;
+    logAdmin(`Agregando producto al pedido: ${id_pedido}`, 'info', 'PEDIDOS');
 
+    if (!id_pedido || !codigo_barra || !nombre_producto || !cantidad || !precio) {
+        return res.status(400).json({ 
+            error: 'Todos los campos son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
 
-    db.query(insertProductoQuery, [id_pedido, codigo_barra, nombre_producto, cantidad, precio], (err, result) => {
+    try {
+        // Insertar producto
+        const insertQuery = `
+            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio) 
+            VALUES (?, ?, ?, ?, ?)
+        `;
+        
+        await executeQuery(insertQuery, [id_pedido, codigo_barra, nombre_producto, cantidad, precio], 'INSERT_PRODUCTO_PEDIDO');
 
-        if (err) {
-            console.error('Error al insertar el producto:', err);
-            return res.status(500).json({ success: false, message: 'Error al agregar el producto.' });
-        }
-
-        // 🔹 Después de insertar, actualizar el monto total del pedido
-        const updateTotalQuery = `
+        // Actualizar totales del pedido
+        const updateQuery = `
             UPDATE pedidos 
-            SET monto_total = (SELECT SUM(subtotal) FROM pedidos_contenido WHERE id_pedido = ?) 
+            SET monto_total = (
+                SELECT SUM(cantidad * precio) 
+                FROM pedidos_contenido 
+                WHERE id_pedido = ?
+            ),
+            cantidad_productos = (
+                SELECT SUM(cantidad) 
+                FROM pedidos_contenido 
+                WHERE id_pedido = ?
+            )
             WHERE id = ?
         `;
 
-        db.query(updateTotalQuery, [id_pedido, id_pedido], (err, result) => {
-            if (err) {
-                console.error('Error al actualizar el monto total del pedido:', err);
-                return res.status(500).json({ success: false, message: 'Error al actualizar el total del pedido.' });
-            }
+        await executeQuery(updateQuery, [id_pedido, id_pedido, id_pedido], 'UPDATE_TOTALES_PEDIDO');
 
-            res.json({ success: true, message: 'Producto agregado y pedido actualizado correctamente.' });
+        logAdmin(`✅ Producto agregado al pedido ${id_pedido} y totales actualizados`, 'success', 'PEDIDOS');
+        res.json({ 
+            success: true, 
+            message: 'Producto agregado y pedido actualizado correctamente',
+            timestamp: new Date().toISOString()
         });
-    });
-};
+    } catch (error) {
+        logAdmin(`❌ Error agregando producto al pedido ${id_pedido}: ${error.message}`, 'error', 'PEDIDOS');
+        res.status(500).json({ 
+            error: 'Error al agregar el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
-const articulosOferta = (req, res) => {
-    const query = `
-        SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
-        FROM articulo_temp WHERE cat = '1';
-    `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error("Error ejecutando la consulta:", err);
-            res.status(500).send("Error en el servidor");
-            return;
+const eliminarProducto = asyncHandler(async (req, res) => {
+    const productoId = req.params.id;
+
+    logAdmin(`Eliminando producto: ${productoId}`, 'info', 'PRODUCTOS');
+
+    if (!productoId || isNaN(productoId)) {
+        return res.status(400).json({ 
+            error: 'ID de producto inválido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `DELETE FROM pedidos_contenido WHERE id = ?`;
+        const result = await executeQuery(query, [productoId], 'DELETE_PRODUCTO');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
+            });
         }
-        res.json(results);
-    });
-};
 
-const articulosDest = (req, res) => {
-    const query = `
-        SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
-        FROM articulo_temp WHERE cat = '2';
-    `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error("Error ejecutando la consulta:", err);
-            res.status(500).send("Error en el servidor");
-            return;
+        logAdmin(`✅ Producto ${productoId} eliminado exitosamente`, 'success', 'PRODUCTOS');
+        res.json({ 
+            success: true, 
+            message: 'Producto eliminado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando producto ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al eliminar el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// ==============================================
+// GESTIÓN DE OFERTAS Y DESTACADOS OPTIMIZADA
+// ==============================================
+
+const articulosOferta = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo artículos en oferta', 'info', 'OFERTAS');
+    
+    try {
+        const query = `
+            SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
+            FROM articulo_temp 
+            WHERE cat = '1' AND activo = 1
+            ORDER BY orden, fecha_inicio DESC
+        `;
+        
+        const results = await executeQuery(query, [], 'ARTICULOS_OFERTA');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} artículos en oferta obtenidos (${duration}ms)`, 'success', 'OFERTAS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo artículos en oferta: ${error.message}`, 'error', 'OFERTAS');
+        res.status(500).json({ 
+            error: 'Error al obtener artículos en oferta',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const articulosDest = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo artículos destacados', 'info', 'DESTACADOS');
+    
+    try {
+        const query = `
+            SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
+            FROM articulo_temp 
+            WHERE cat = '2' AND activo = 1
+            ORDER BY orden, fecha_inicio DESC
+        `;
+        
+        const results = await executeQuery(query, [], 'ARTICULOS_DESTACADOS');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} artículos destacados obtenidos (${duration}ms)`, 'success', 'DESTACADOS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo artículos destacados: ${error.message}`, 'error', 'DESTACADOS');
+        res.status(500).json({ 
+            error: 'Error al obtener artículos destacados',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const agregarArticuloOferta = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
+
+    logAdmin(`Agregando artículo a ofertas: ${CODIGO_BARRA}`, 'info', 'OFERTAS');
+
+    if (!CODIGO_BARRA || !nombre || !PRECIO) {
+        return res.status(400).json({ 
+            error: 'Código de barra, nombre y precio son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `
+            INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
+            VALUES (?, ?, ?, ?, 1, 1)
+            ON DUPLICATE KEY UPDATE 
+                PRECIO = VALUES(PRECIO), 
+                PRECIO_DESC = VALUES(PRECIO_DESC),
+                activo = 1
+        `;
+
+        await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_OFERTA');
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a ofertas exitosamente`, 'success', 'OFERTAS');
+        res.json({ 
+            success: true, 
+            message: 'Artículo agregado a oferta',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error agregando artículo a ofertas ${CODIGO_BARRA}: ${error.message}`, 'error', 'OFERTAS');
+        res.status(500).json({ 
+            error: 'Error al agregar artículo a oferta',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const agregarArticuloDest = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
+
+    logAdmin(`Agregando artículo a destacados: ${CODIGO_BARRA}`, 'info', 'DESTACADOS');
+
+    if (!CODIGO_BARRA || !nombre || !PRECIO) {
+        return res.status(400).json({ 
+            error: 'Código de barra, nombre y precio son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `
+            INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
+            VALUES (?, ?, ?, ?, 2, 1)
+            ON DUPLICATE KEY UPDATE 
+                PRECIO = VALUES(PRECIO), 
+                PRECIO_DESC = VALUES(PRECIO_DESC),
+                activo = 1
+        `;
+
+        await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_DESTACADO');
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a destacados exitosamente`, 'success', 'DESTACADOS');
+        res.json({ 
+            success: true, 
+            message: 'Artículo agregado a destacados',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error agregando artículo a destacados ${CODIGO_BARRA}: ${error.message}`, 'error', 'DESTACADOS');
+        res.status(500).json({ 
+            error: 'Error al agregar artículo a destacados',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const actualizarPrecioOferta = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA, PRECIO_DESC } = req.body;
+
+    logAdmin(`Actualizando precio de oferta: ${CODIGO_BARRA}`, 'info', 'OFERTAS');
+
+    if (!CODIGO_BARRA || !PRECIO_DESC) {
+        return res.status(400).json({ 
+            error: 'Código de barra y precio de descuento son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE articulo_temp SET PRECIO_DESC = ? WHERE CODIGO_BARRA = ? AND cat = '1'`;
+        const result = await executeQuery(query, [PRECIO_DESC, CODIGO_BARRA], 'UPDATE_PRECIO_OFERTA');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Artículo en oferta no encontrado',
+                timestamp: new Date().toISOString()
+            });
         }
-        res.json(results);
-    });
+
+        logAdmin(`✅ Precio de oferta actualizado para ${CODIGO_BARRA}`, 'success', 'OFERTAS');
+        res.json({ 
+            success: true, 
+            message: 'Precio de oferta actualizado',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando precio de oferta ${CODIGO_BARRA}: ${error.message}`, 'error', 'OFERTAS');
+        res.status(500).json({ 
+            error: 'Error al actualizar precio de oferta',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const eliminarArticuloOferta = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA } = req.params;
+
+    logAdmin(`Eliminando artículo de ofertas: ${CODIGO_BARRA}`, 'info', 'OFERTAS');
+
+    if (!CODIGO_BARRA) {
+        return res.status(400).json({ 
+            error: 'Código de barra es requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE articulo_temp SET activo = 0 WHERE CODIGO_BARRA = ? AND cat = '1'`;
+        const result = await executeQuery(query, [CODIGO_BARRA], 'DELETE_OFERTA');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Artículo en oferta no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} eliminado de ofertas exitosamente`, 'success', 'OFERTAS');
+        res.json({ 
+            success: true, 
+            message: 'Artículo eliminado de oferta',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando artículo de ofertas ${CODIGO_BARRA}: ${error.message}`, 'error', 'OFERTAS');
+        res.status(500).json({ 
+            error: 'Error al eliminar artículo de oferta',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const eliminarArticuloDest = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA } = req.params;
+
+    logAdmin(`Eliminando artículo de destacados: ${CODIGO_BARRA}`, 'info', 'DESTACADOS');
+
+    if (!CODIGO_BARRA) {
+        return res.status(400).json({ 
+            error: 'Código de barra es requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE articulo_temp SET activo = 0 WHERE CODIGO_BARRA = ? AND cat = '2'`;
+        const result = await executeQuery(query, [CODIGO_BARRA], 'DELETE_DESTACADO');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Artículo destacado no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} eliminado de destacados exitosamente`, 'success', 'DESTACADOS');
+        res.json({ 
+            success: true, 
+            message: 'Artículo eliminado de destacados',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando artículo de destacados ${CODIGO_BARRA}: ${error.message}`, 'error', 'DESTACADOS');
+        res.status(500).json({ 
+            error: 'Error al eliminar artículo de destacados',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// ==============================================
+// SISTEMA DE EMAILS OPTIMIZADO
+// ==============================================
+
+// Configuración centralizada del transportador de email
+let emailTransporter = null;
+
+const getEmailTransporter = () => {
+    if (!emailTransporter) {
+        emailTransporter = nodemailer.createTransporter({
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false,
+            auth: {
+                user: 'faausc@gmail.com',
+                pass: 'qkbjcnmfgxoljgln'
+            },
+            tls: {
+                rejectUnauthorized: false,
+            }
+        });
+    }
+    return emailTransporter;
 };
 
+const MailPedidoProcesado = asyncHandler(async (req, res) => {
+    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone } = req.body;
+    
+    logAdmin(`Enviando email de pedido procesado a: ${clientMail}`, 'info', 'EMAIL');
 
+    if (!clientMail || !name || !items || !Array.isArray(items)) {
+        return res.status(400).json({ 
+            error: 'Datos incompletos para envío de email',
+            timestamp: new Date().toISOString()
+        });
+    }
 
+    try {
+        const templatePath = path.join(__dirname, '../resources/email_template/pedido_confirmado.html');
+        let htmlTemplate = await fs.readFile(templatePath, 'utf8');
+
+        let itemsHtml = '';
+        items.forEach(item => {
+            itemsHtml += `<tr>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.name || item.nombre_producto}
+                </td>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.quantity || item.cantidad}
+                </td>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.price || item.precio}
+                </td>
+            </tr>`;
+        });
+
+        htmlTemplate = htmlTemplate.replace(/{{storeName}}/g, storeName || 'PuntoSur')
+                                   .replace(/{{name}}/g, name)
+                                   .replace(/{{items}}/g, itemsHtml)
+                                   .replace(/{{subtotal}}/g, subtotal || 0)
+                                   .replace(/{{shippingCost}}/g, shippingCost || 0)
+                                   .replace(/{{total}}/g, total || 0)
+                                   .replace(/{{storeMail}}/g, storeMail || process.env.STORE_EMAIL)
+                                   .replace(/{{storePhone}}/g, storePhone || process.env.STORE_PHONE);
+
+        const transporter = getEmailTransporter();
+        const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
+
+        await transporter.sendMail({
+            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            to: clientMail,
+            subject: 'Pedido confirmado con éxito!',
+            html: htmlTemplate,
+            attachments: [
+                {
+                    filename: 'logo.jpg',
+                    path: logoPath,
+                    cid: 'logo'
+                }
+            ]
+        });
+
+        logAdmin(`✅ Email de pedido procesado enviado a: ${clientMail}`, 'success', 'EMAIL');
+        res.json({ 
+            success: true, 
+            message: 'Email enviado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error enviando email a ${clientMail}: ${error.message}`, 'error', 'EMAIL');
+        res.status(500).json({ 
+            error: 'Error al enviar email de confirmación',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const MailPedidoEnCamino = asyncHandler(async (req, res) => {
+    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
+    
+    logAdmin(`Enviando email de pedido en camino a: ${clientMail}`, 'info', 'EMAIL');
+
+    if (!clientMail || !name || !items || !Array.isArray(items)) {
+        return res.status(400).json({ 
+            error: 'Datos incompletos para envío de email',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const templatePath = path.join(__dirname, '../resources/email_template/pedido_camino.html');
+        let htmlTemplate = await fs.readFile(templatePath, 'utf8');
+
+        let itemsHtml = '';
+        items.forEach(item => {
+            itemsHtml += `<tr>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.name || item.nombre_producto}
+                </td>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.quantity || item.cantidad}
+                </td>
+                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                    ${item.price || item.precio}
+                </td>
+            </tr>`;
+        });
+
+        htmlTemplate = htmlTemplate.replace(/{{storeName}}/g, storeName || 'PuntoSur')
+                                   .replace(/{{name}}/g, name)
+                                   .replace(/{{items}}/g, itemsHtml)
+                                   .replace(/{{subtotal}}/g, subtotal || 0)
+                                   .replace(/{{shippingCost}}/g, shippingCost || 0)
+                                   .replace(/{{total}}/g, total || 0)
+                                   .replace(/{{storeMail}}/g, storeMail || process.env.STORE_EMAIL)
+                                   .replace(/{{storePhone}}/g, storePhone || process.env.STORE_PHONE)
+                                   .replace(/{{horarioInicio}}/g, desde || '9:00')
+                                   .replace(/{{horarioFin}}/g, hasta || '18:00');
+
+        const transporter = getEmailTransporter();
+        const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
+
+        await transporter.sendMail({
+            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            to: clientMail,
+            subject: 'Tu pedido está en camino!',
+            html: htmlTemplate,
+            attachments: [
+                {
+                    filename: 'logo.jpg',
+                    path: logoPath,
+                    cid: 'logo'
+                }
+            ]
+        });
+
+        logAdmin(`✅ Email de pedido en camino enviado a: ${clientMail}`, 'success', 'EMAIL');
+        res.json({ 
+            success: true, 
+            message: 'Email enviado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error enviando email de pedido en camino a ${clientMail}: ${error.message}`, 'error', 'EMAIL');
+        res.status(500).json({ 
+            error: 'Error al enviar email de pedido en camino',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Alias para compatibilidad
+const actualizarEstadoPedidoEnCamino = actualizarEstadoPedidoProcesado;
+
+// ==============================================
+// ESTADÍSTICAS OPTIMIZADAS
+// ==============================================
 
 const getWhereClause = (fechaInicio, fechaFin) => {
     if (fechaInicio && fechaFin) {
-        return `WHERE p.fecha BETWEEN '${fechaInicio}' AND '${fechaFin}'`;
+        return `WHERE p.fecha BETWEEN ? AND ?`;
     }
     return "";
 };
 
-// 🔹 Función para obtener ingresos totales
-const getIngresos = async (fechaInicio, fechaFin) => {
-    const whereClause = getWhereClause(fechaInicio, fechaFin);
-    const query = `SELECT SUM(monto_total) as total FROM pedidos p ${whereClause}`;
-    const [rows] = await db.promise().query(query);
-    return rows.length > 0 ? rows[0].total || 0 : 0;
-};
+const obtenerStats = asyncHandler(async (req, res) => {
+    const { fechaInicio, fechaFin } = req.query;
+    const startTime = Date.now();
+    
+    logAdmin(`Obteniendo estadísticas - Fechas: ${fechaInicio || 'sin inicio'} a ${fechaFin || 'sin fin'}`, 'info', 'STATS');
 
-// 🔹 Función para obtener productos más vendidos
-const getProductosMasVendidos = async (fechaInicio, fechaFin) => {
-    const whereClause = getWhereClause(fechaInicio, fechaFin);
-    const query = `
-        SELECT pc.nombre_producto, SUM(pc.cantidad) as cantidad 
-        FROM pedidos_contenido pc 
-        JOIN pedidos p ON pc.id_pedido = p.id
-        ${whereClause}
-        GROUP BY pc.nombre_producto
-        ORDER BY cantidad DESC 
-        LIMIT 5
-    `;
-    const [rows] = await db.promise().query(query);
-    return rows;
-};
-
-// 🔹 Función para obtener clientes con más compras
-const getClientesTop = async (fechaInicio, fechaFin) => {
-    const whereClause = getWhereClause(fechaInicio, fechaFin);
-    const query = `
-        SELECT p.cliente, COUNT(*) as total 
-        FROM pedidos p 
-        ${whereClause}
-        GROUP BY p.cliente 
-        ORDER BY monto_total DESC 
-        LIMIT 5
-    `;
-    const [rows] = await db.promise().query(query);
-    return rows;
-};
-
-// 🔹 Función para obtener ventas por ciudad
-const getVentasPorCiudad = async (fechaInicio, fechaFin) => {
-    const whereClause = getWhereClause(fechaInicio, fechaFin);
-    const query = `
-        SELECT p.direccion_cliente, SUM(p.monto_total) as total 
-        FROM pedidos p 
-        ${whereClause}
-        GROUP BY p.direccion_cliente
-    `;
-    const [rows] = await db.promise().query(query);
-    return rows;
-};
-
-// 🔹 Función para obtener ventas por mes
-const getVentasPorMes = async (fechaInicio, fechaFin) => {
-    const whereClause = getWhereClause(fechaInicio, fechaFin);
-    const query = `
-        SELECT DATE_FORMAT(p.fecha, '%Y-%m') as mes, SUM(p.monto_total) as total 
-        FROM pedidos p 
-        ${whereClause}
-        GROUP BY mes
-        ORDER BY mes ASC
-    `;
-    const [rows] = await db.promise().query(query);
-    return rows;
-};
-
-// 🔹 Función principal que devuelve todas las estadísticas
-const obtenerStats = async (req, res) => {
     try {
-        const { fechaInicio, fechaFin } = req.query;
+        const whereClause = getWhereClause(fechaInicio, fechaFin);
+        const dateParams = fechaInicio && fechaFin ? [fechaInicio, fechaFin] : [];
 
-        const ingresos = await getIngresos(fechaInicio, fechaFin);
-        const productosMasVendidos = await getProductosMasVendidos(fechaInicio, fechaFin);
-        const clientesTop = await getClientesTop(fechaInicio, fechaFin);
-        const ventasPorCiudad = await getVentasPorCiudad(fechaInicio, fechaFin);
-        const ventasPorMes = await getVentasPorMes(fechaInicio, fechaFin);
-
-        res.json({
-            ingresos,
+        // Ejecutar todas las consultas en paralelo para mejor rendimiento
+        const [
+            ingresosResult,
             productosMasVendidos,
             clientesTop,
             ventasPorCiudad,
             ventasPorMes
-        });
+        ] = await Promise.all([
+            // Ingresos totales
+            executeQuery(
+                `SELECT COALESCE(SUM(monto_total), 0) as total FROM pedidos p ${whereClause}`,
+                dateParams,
+                'STATS_INGRESOS'
+            ),
+            // Productos más vendidos
+            executeQuery(
+                `SELECT pc.nombre_producto, SUM(pc.cantidad) as cantidad 
+                 FROM pedidos_contenido pc 
+                 JOIN pedidos p ON pc.id_pedido = p.id
+                 ${whereClause}
+                 GROUP BY pc.nombre_producto
+                 ORDER BY cantidad DESC 
+                 LIMIT 5`,
+                dateParams,
+                'STATS_PRODUCTOS'
+            ),
+            // Clientes top
+            executeQuery(
+                `SELECT p.cliente, COUNT(*) as total_pedidos, SUM(p.monto_total) as total_gastado
+                 FROM pedidos p 
+                 ${whereClause}
+                 GROUP BY p.cliente 
+                 ORDER BY total_gastado DESC 
+                 LIMIT 5`,
+                dateParams,
+                'STATS_CLIENTES'
+            ),
+            // Ventas por ciudad (usando dirección como aproximación)
+            executeQuery(
+                `SELECT p.direccion_cliente, COUNT(*) as pedidos, SUM(p.monto_total) as total 
+                 FROM pedidos p 
+                 ${whereClause}
+                 GROUP BY p.direccion_cliente
+                 ORDER BY total DESC
+                 LIMIT 10`,
+                dateParams,
+                'STATS_CIUDADES'
+            ),
+            // Ventas por mes
+            executeQuery(
+                `SELECT DATE_FORMAT(p.fecha, '%Y-%m') as mes, 
+                        COUNT(*) as pedidos,
+                        SUM(p.monto_total) as total 
+                 FROM pedidos p 
+                 ${whereClause}
+                 GROUP BY mes
+                 ORDER BY mes ASC`,
+                dateParams,
+                'STATS_MESES'
+            )
+        ]);
 
+        const stats = {
+            ingresos: ingresosResult[0]?.total || 0,
+            productosMasVendidos: productosMasVendidos || [],
+            clientesTop: clientesTop || [],
+            ventasPorCiudad: ventasPorCiudad || [],
+            ventasPorMes: ventasPorMes || [],
+            periodo: {
+                fechaInicio: fechaInicio || 'Sin límite',
+                fechaFin: fechaFin || 'Sin límite'
+            }
+        };
+
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Estadísticas obtenidas exitosamente (${duration}ms)`, 'success', 'STATS');
+        
+        res.json(stats);
     } catch (error) {
-        console.error("Error en estadísticas:", error);
-        res.status(500).json({ error: "Error al obtener estadísticas" });
+        logAdmin(`❌ Error obteniendo estadísticas: ${error.message}`, 'error', 'STATS');
+        res.status(500).json({ 
+            error: 'Error al obtener estadísticas',
+            timestamp: new Date().toISOString()
+        });
     }
+});
+
+// ==============================================
+// FUNCIÓN DE VARIABLES DE ENTORNO
+// ==============================================
+
+const variablesEnv = (req, res) => {
+    logAdmin('Obteniendo variables de entorno para admin', 'info', 'CONFIG');
+    
+    const config = {
+        storeName: process.env.STORE_NAME,
+        storeAddress: process.env.STORE_ADDRESS,
+        storePhone: process.env.STORE_PHONE,
+        storeDescription: process.env.STORE_DESCRIPTION,
+        storeInstagram: process.env.STORE_INSTAGRAM,
+        storeEmail: process.env.STORE_EMAIL,
+        storeDeliveryBase: process.env.STORE_DELIVERY_BASE,
+        storeDeliveryKm: process.env.STORE_DELIVERY_KM,
+        iva: process.env.IVA,
+        pageStatus: process.env.PAGE_STATUS,
+        userName: process.env.USER_NAME,
+        password: process.env.PASSWORD,
+        sessionSecret: process.env.SESSION_SECRET,
+        openCageApiKey: process.env.OPENCAGE_API_KEY,
+        mercadopagoAccessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
+    };
+    
+    logAdmin('✅ Variables de entorno para admin enviadas', 'success', 'CONFIG');
+    res.json(config);
 };
 
+// Función legacy para compatibilidad
+const login = loginCheck;
 
-
-
-
+// ==============================================
+// EXPORTAR TODOS LOS CONTROLADORES
+// ==============================================
 
 module.exports = {
+    // Autenticación y configuración
+    loginCheck,
+    login, // Alias para compatibilidad
     obtenerConfig,
     saveConfig,
-    login,
+    variablesEnv,
+    
+    // Gestión de pedidos
     pedidosPendientes,
     pedidosEntregados,
     productosPedido,
-    buscarProductoEnPedido,
-    actualizarProducto,
-    actualizarPedido,
-    actualizarInfoProducto,
-    MailPedidoProcesado,
-    variablesEnv,
     actualizarEstadoPedidoProcesado,
-    MailPedidoEnCamino,
     actualizarEstadoPedidoEnCamino,
-    loginCheck, 
     eliminarPedido,
+    actualizarPedido,
     agregarProductoAlPedido,
+    
+    // Gestión de productos
+    buscarProductoEnPedido,
+    actualizarInfoProducto,
+    actualizarProducto,
     eliminarProducto,
+    
+    // Gestión de ofertas y destacados
+    articulosOferta,
+    articulosDest,
     agregarArticuloOferta,
+    agregarArticuloDest,
     actualizarPrecioOferta,
     eliminarArticuloOferta,
-    articulosOferta, 
-    agregarArticuloDest,
-    articulosDest,
     eliminarArticuloDest,
+    
+    // Sistema de emails
+    MailPedidoProcesado,
+    MailPedidoEnCamino,
+    
+    // Estadísticas
     obtenerStats
-
-
-
 };

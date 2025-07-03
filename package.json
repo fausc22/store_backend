@@ -1,14 +1,27 @@
 {
   "name": "tienda_backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Backend optimizado para tienda online PuntoSur con sistema de logs, pool de conexiones y gestión de errores mejorada",
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:pm2": "pm2 start ecosystem.config.js",
+    "stop:pm2": "pm2 stop tienda-backend",
+    "restart:pm2": "pm2 restart tienda-backend",
+    "logs:pm2": "pm2 logs tienda-backend",
+    "monitor:pm2": "pm2 monit",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "ecommerce",
+    "tienda",
+    "nodejs",
+    "mysql",
+    "mercadopago",
+    "express"
+  ],
+  "author": "FC Software",
   "license": "ISC",
   "dependencies": {
     "axios": "^1.7.3",
@@ -17,17 +30,20 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
-    "fs": "^0.0.1-security",
     "jsonwebtoken": "^9.0.2",
     "mercadopago": "^2.0.11",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "mysql2": "^3.11.0",
     "nodemailer": "^6.9.14",
-    "nodemon": "^3.1.4",
     "path": "^0.12.7"
   },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
   "engines": {
-    "node": ">=18.x"
-  }
+    "node": ">=18.x",
+    "npm": ">=8.x"
+  },
+  "homepage": "https://rsoftware.com.ar/tienda"
 }
