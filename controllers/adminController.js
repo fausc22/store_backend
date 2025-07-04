@@ -392,59 +392,7 @@ const eliminarPedido = asyncHandler(async (req, res) => {
 // GESTIÓN DE PRODUCTOS OPTIMIZADA - CORREGIDA
 // ==============================================
 
-const buscarProductoEnPedido = asyncHandler(async (req, res) => {
-    const searchTerm = req.query.search?.trim() || '';
-    const startTime = Date.now();
-    
-    logAdmin(`Buscando productos: "${searchTerm}"`, 'info', 'PRODUCTOS');
-    
-    if (searchTerm.length < 2) {
-        return res.status(400).json({ 
-            error: 'Término de búsqueda debe tener al menos 2 caracteres',
-            timestamp: new Date().toISOString()
-        });
-    }
 
-    try {
-        // Usar la columna de precio correcta según IVA configurado
-        const ivaLevel = parseInt(process.env.IVA) || 0;
-        let precioColumn = 'PRECIO_SIN_IVA';
-        
-        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
-        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
-        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
-        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
-        
-        const query = `
-            SELECT 
-                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
-                CODIGO_BARRA AS codigo_barra, 
-                COSTO AS costo, 
-                ${precioColumn} AS precio, 
-                COD_DPTO AS categoria,
-                STOCK AS stock
-            FROM articulo 
-            WHERE (art_desc_vta LIKE ? OR NOMBRE LIKE ? OR CODIGO_BARRA LIKE ?)
-            AND HABILITADO = 'S'
-            ORDER BY COALESCE(art_desc_vta, NOMBRE) ASC
-            LIMIT 50
-        `;
-        
-        const searchPattern = `%${searchTerm}%`;
-        const results = await executeQuery(query, [searchPattern, searchPattern, searchPattern], 'BUSCAR_PRODUCTOS');
-        
-        const duration = Date.now() - startTime;
-        logAdmin(`✅ ${results.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'PRODUCTOS');
-        
-        res.json(results);
-    } catch (error) {
-        logAdmin(`❌ Error buscando productos "${searchTerm}": ${error.message}`, 'error', 'PRODUCTOS');
-        res.status(500).json({ 
-            error: 'Error al buscar productos',
-            timestamp: new Date().toISOString()
-        });
-    }
-});
 
 const actualizarInfoProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
@@ -1257,6 +1205,721 @@ const login = loginCheck;
 // EXPORTAR TODOS LOS CONTROLADORES
 // ==============================================
 
+
+
+//NUEVAS FUNCIONES PARA INTERFAZ PRODUCTOS
+const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo todos los productos', 'info', 'PRODUCTOS');
+    
+    try {
+        // Usar la columna de precio correcta según IVA configurado
+        const ivaLevel = parseInt(process.env.IVA) || 0;
+        let precioColumn = 'PRECIO_SIN_IVA';
+        
+        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
+        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
+        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
+        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        
+        const query = `
+            SELECT 
+                COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
+                a.CODIGO_BARRA AS codigo_barra, 
+                COALESCE(a.COSTO, 0) AS costo, 
+                COALESCE(a.PRECIO, 0) AS precio,
+                COALESCE(a.${precioColumn}, 0) AS precio_sin_iva, 
+                COALESCE(a.PRECIO_SIN_IVA_4, 0) AS precio_sin_iva_4,
+                a.COD_DPTO AS categoria_id,
+                COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
+                COALESCE(a.STOCK, '0') AS stock,
+                COALESCE(a.HABILITADO, 'S') AS habilitado,
+                COALESCE(a.marca, '') AS marca,
+                a.COD_INTERNO AS cod_interno
+            FROM articulo a
+            LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+            WHERE a.HABILITADO IN ('S', 'N')
+            ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
+            LIMIT 1000
+        `;
+        
+        const results = await executeQuery(query, [], 'TODOS_PRODUCTOS');
+        
+        // Procesar los resultados para asegurar tipos correctos
+        const productosFormateados = results.map(producto => ({
+            ...producto,
+            costo: parseFloat(producto.costo) || 0,
+            precio: parseFloat(producto.precio) || 0,
+            precio_sin_iva: parseFloat(producto.precio_sin_iva) || 0,
+            precio_sin_iva_4: parseFloat(producto.precio_sin_iva_4) || 0,
+            stock: parseInt(producto.stock) || 0,
+            categoria: producto.categoria || 'Sin categoría'
+        }));
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${productosFormateados.length} productos obtenidos (${duration}ms)`, 'success', 'PRODUCTOS');
+        
+        res.json(productosFormateados);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo todos los productos: ${error.message}`, 'error', 'PRODUCTOS');
+        console.error('Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Error al obtener productos',
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// También actualizar la función de búsqueda existente
+const buscarProductoEnPedido = asyncHandler(async (req, res) => {
+    const searchTerm = req.query.search?.trim() || '';
+    const startTime = Date.now();
+    
+    logAdmin(`Buscando productos: "${searchTerm}"`, 'info', 'PRODUCTOS');
+    
+    if (searchTerm.length < 2) {
+        return res.status(400).json({ 
+            error: 'Término de búsqueda debe tener al menos 2 caracteres',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Usar la columna de precio correcta según IVA configurado
+        const ivaLevel = parseInt(process.env.IVA) || 0;
+        let precioColumn = 'PRECIO_SIN_IVA';
+        
+        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
+        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
+        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
+        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        
+        const query = `
+            SELECT 
+                COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
+                a.CODIGO_BARRA AS codigo_barra, 
+                COALESCE(a.COSTO, 0) AS costo, 
+                COALESCE(a.${precioColumn}, 0) AS precio, 
+                a.COD_DPTO AS categoria_id,
+                COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
+                COALESCE(a.STOCK, '0') AS stock,
+                COALESCE(a.HABILITADO, 'S') AS habilitado,
+                COALESCE(a.marca, '') AS marca
+            FROM articulo a
+            LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+            WHERE (a.art_desc_vta LIKE ? OR a.NOMBRE LIKE ? OR a.CODIGO_BARRA LIKE ?)
+            AND a.HABILITADO = 'S'
+            ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
+            LIMIT 50
+        `;
+        
+        const searchPattern = `%${searchTerm}%`;
+        const results = await executeQuery(query, [searchPattern, searchPattern, searchPattern], 'BUSCAR_PRODUCTOS');
+        
+        // Procesar los resultados
+        const productosFormateados = results.map(producto => ({
+            ...producto,
+            costo: parseFloat(producto.costo) || 0,
+            precio: parseFloat(producto.precio) || 0,
+            stock: parseInt(producto.stock) || 0,
+            categoria: producto.categoria || 'Sin categoría'
+        }));
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${productosFormateados.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'PRODUCTOS');
+        
+        res.json(productosFormateados);
+    } catch (error) {
+        logAdmin(`❌ Error buscando productos "${searchTerm}": ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al buscar productos',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const crearProducto = asyncHandler(async (req, res) => {
+    const { 
+        codigo_barra, 
+        nombre, 
+        costo, 
+        precio, 
+        precio_sin_iva, 
+        precio_sin_iva_4, 
+        categoria, 
+        stock, 
+        descripcion, 
+        habilitado 
+    } = req.body;
+    
+    logAdmin(`Creando nuevo producto: ${codigo_barra}`, 'info', 'PRODUCTOS');
+    
+    if (!codigo_barra || !nombre) {
+        return res.status(400).json({ 
+            error: 'Código de barra y nombre son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Verificar si el producto ya existe
+        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        const checkResult = await executeQuery(checkQuery, [codigo_barra], 'CHECK_PRODUCTO_EXISTE');
+        
+        if (checkResult[0].count > 0) {
+            logAdmin(`❌ Producto ${codigo_barra} ya existe`, 'warn', 'PRODUCTOS');
+            return res.status(409).json({ 
+                error: 'Ya existe un producto con ese código de barra',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const query = `
+            INSERT INTO articulo (
+                CODIGO_BARRA, 
+                art_desc_vta, 
+                NOMBRE,
+                COSTO, 
+                PRECIO, 
+                PRECIO_SIN_IVA, 
+                PRECIO_SIN_IVA_4, 
+                COD_DPTO, 
+                STOCK, 
+                DESCRIPCION,
+                HABILITADO
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        
+        const values = [
+            codigo_barra,
+            nombre,
+            nombre, // NOMBRE también se llena con el mismo valor
+            parseFloat(costo) || 0,
+            parseFloat(precio) || 0,
+            parseFloat(precio_sin_iva) || 0,
+            parseFloat(precio_sin_iva_4) || 0,
+            categoria || '',
+            parseInt(stock) || 0,
+            descripcion || '',
+            habilitado || 'S'
+        ];
+
+        const result = await executeQuery(query, values, 'CREATE_PRODUCTO');
+
+        logAdmin(`✅ Producto ${codigo_barra} creado exitosamente`, 'success', 'PRODUCTOS');
+        res.json({ 
+            success: true, 
+            message: 'Producto creado correctamente',
+            id: result.insertId,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error creando producto ${codigo_barra}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al crear el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const obtenerProductoPorCodigo = asyncHandler(async (req, res) => {
+    const codigoBarra = req.params.codigo;
+    const startTime = Date.now();
+    
+    logAdmin(`Obteniendo producto por código: ${codigoBarra}`, 'info', 'PRODUCTOS');
+    
+    if (!codigoBarra) {
+        return res.status(400).json({ 
+            error: 'Código de barra es requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Usar la columna de precio correcta según IVA configurado
+        const ivaLevel = parseInt(process.env.IVA) || 0;
+        let precioColumn = 'PRECIO_SIN_IVA';
+        
+        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
+        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
+        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
+        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        
+        const query = `
+            SELECT 
+                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
+                CODIGO_BARRA AS codigo_barra, 
+                COSTO AS costo, 
+                PRECIO AS precio,
+                ${precioColumn} AS precio_sin_iva, 
+                PRECIO_SIN_IVA_4 AS precio_sin_iva_4,
+                COD_DPTO AS categoria,
+                STOCK AS stock,
+                HABILITADO AS habilitado,
+                DESCRIPCION AS descripcion
+            FROM articulo 
+            WHERE CODIGO_BARRA = ?
+        `;
+        
+        const results = await executeQuery(query, [codigoBarra], 'GET_PRODUCTO_BY_CODE');
+        
+        const duration = Date.now() - startTime;
+        
+        if (results.length === 0) {
+            logAdmin(`❌ Producto ${codigoBarra} no encontrado (${duration}ms)`, 'warn', 'PRODUCTOS');
+            return res.status(404).json({ 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Producto ${codigoBarra} obtenido (${duration}ms)`, 'success', 'PRODUCTOS');
+        res.json(results[0]);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo producto ${codigoBarra}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al obtener el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const eliminarProductoCompleto = asyncHandler(async (req, res) => {
+    const codigoBarra = req.params.codigo;
+    
+    logAdmin(`Eliminando producto: ${codigoBarra}`, 'info', 'PRODUCTOS');
+    
+    if (!codigoBarra) {
+        return res.status(400).json({ 
+            error: 'Código de barra es requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Verificar si el producto existe
+        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        const checkResult = await executeQuery(checkQuery, [codigoBarra], 'CHECK_PRODUCTO_EXISTE');
+        
+        if (checkResult[0].count === 0) {
+            logAdmin(`❌ Producto ${codigoBarra} no encontrado`, 'warn', 'PRODUCTOS');
+            return res.status(404).json({ 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // En lugar de eliminar completamente, mejor deshabilitar el producto
+        const query = `UPDATE articulo SET HABILITADO = 'N' WHERE CODIGO_BARRA = ?`;
+        const result = await executeQuery(query, [codigoBarra], 'DISABLE_PRODUCTO');
+
+        if (result.affectedRows === 0) {
+            logAdmin(`❌ No se pudo deshabilitar el producto ${codigoBarra}`, 'warn', 'PRODUCTOS');
+            return res.status(404).json({ 
+                error: 'No se pudo eliminar el producto',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Producto ${codigoBarra} deshabilitado exitosamente`, 'success', 'PRODUCTOS');
+        res.json({ 
+            success: true, 
+            message: 'Producto eliminado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando producto ${codigoBarra}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al eliminar el producto',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const obtenerCategoriasProductos = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo categorías de productos', 'info', 'PRODUCTOS');
+    
+    try {
+        const query = `
+            SELECT DISTINCT COD_DPTO as categoria, COUNT(*) as total_productos
+            FROM articulo 
+            WHERE HABILITADO = 'S' AND COD_DPTO IS NOT NULL AND COD_DPTO != ''
+            GROUP BY COD_DPTO
+            ORDER BY total_productos DESC, COD_DPTO ASC
+        `;
+        
+        const results = await executeQuery(query, [], 'GET_CATEGORIAS');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} categorías obtenidas (${duration}ms)`, 'success', 'PRODUCTOS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo categorías: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al obtener categorías',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const obtenerEstadisticasProductos = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo estadísticas de productos', 'info', 'PRODUCTOS');
+    
+    try {
+        // Ejecutar múltiples consultas en paralelo
+        const [
+            totalResult,
+            stockResult,
+            precioResult,
+            categoriasResult
+        ] = await Promise.all([
+            // Total de productos
+            executeQuery(
+                `SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN HABILITADO = 'S' THEN 1 ELSE 0 END) as habilitados,
+                    SUM(CASE WHEN HABILITADO = 'N' THEN 1 ELSE 0 END) as deshabilitados
+                 FROM articulo`,
+                [],
+                'STATS_TOTAL'
+            ),
+            // Estadísticas de stock
+            executeQuery(
+                `SELECT 
+                    SUM(CASE WHEN STOCK > 0 THEN 1 ELSE 0 END) as con_stock,
+                    SUM(CASE WHEN STOCK = 0 THEN 1 ELSE 0 END) as sin_stock,
+                    SUM(CASE WHEN STOCK > 0 AND STOCK <= 10 THEN 1 ELSE 0 END) as stock_bajo,
+                    SUM(STOCK) as stock_total,
+                    AVG(STOCK) as stock_promedio
+                 FROM articulo WHERE HABILITADO = 'S'`,
+                [],
+                'STATS_STOCK'
+            ),
+            // Estadísticas de precios
+            executeQuery(
+                `SELECT 
+                    AVG(PRECIO) as precio_promedio,
+                    MIN(PRECIO) as precio_minimo,
+                    MAX(PRECIO) as precio_maximo,
+                    SUM(PRECIO * STOCK) as valor_inventario
+                 FROM articulo WHERE HABILITADO = 'S' AND PRECIO > 0`,
+                [],
+                'STATS_PRECIOS'
+            ),
+            // Top categorías
+            executeQuery(
+                `SELECT COD_DPTO as categoria, COUNT(*) as total
+                 FROM articulo 
+                 WHERE HABILITADO = 'S' AND COD_DPTO IS NOT NULL AND COD_DPTO != ''
+                 GROUP BY COD_DPTO 
+                 ORDER BY total DESC 
+                 LIMIT 10`,
+                [],
+                'STATS_CATEGORIAS'
+            )
+        ]);
+
+        const estadisticas = {
+            totales: {
+                total: totalResult[0]?.total || 0,
+                habilitados: totalResult[0]?.habilitados || 0,
+                deshabilitados: totalResult[0]?.deshabilitados || 0
+            },
+            stock: {
+                con_stock: stockResult[0]?.con_stock || 0,
+                sin_stock: stockResult[0]?.sin_stock || 0,
+                stock_bajo: stockResult[0]?.stock_bajo || 0,
+                stock_total: stockResult[0]?.stock_total || 0,
+                stock_promedio: Math.round(stockResult[0]?.stock_promedio || 0)
+            },
+            precios: {
+                precio_promedio: Math.round((precioResult[0]?.precio_promedio || 0) * 100) / 100,
+                precio_minimo: precioResult[0]?.precio_minimo || 0,
+                precio_maximo: precioResult[0]?.precio_maximo || 0,
+                valor_inventario: Math.round((precioResult[0]?.valor_inventario || 0) * 100) / 100
+            },
+            categorias_top: categoriasResult || []
+        };
+
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Estadísticas de productos obtenidas (${duration}ms)`, 'success', 'PRODUCTOS');
+        
+        res.json(estadisticas);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo estadísticas de productos: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al obtener estadísticas de productos',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const actualizarStockProducto = asyncHandler(async (req, res) => {
+    const codigoBarra = req.params.codigo;
+    const { stock, operacion } = req.body; // operacion puede ser 'set', 'add', 'subtract'
+    
+    logAdmin(`Actualizando stock del producto: ${codigoBarra}`, 'info', 'PRODUCTOS');
+    
+    if (!codigoBarra || stock === undefined) {
+        return res.status(400).json({ 
+            error: 'Código de barra y stock son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        let query;
+        let params;
+        const stockValue = parseInt(stock) || 0;
+        
+        switch (operacion) {
+            case 'add':
+                query = `UPDATE articulo SET STOCK = STOCK + ? WHERE CODIGO_BARRA = ?`;
+                params = [stockValue, codigoBarra];
+                break;
+            case 'subtract':
+                query = `UPDATE articulo SET STOCK = GREATEST(0, STOCK - ?) WHERE CODIGO_BARRA = ?`;
+                params = [stockValue, codigoBarra];
+                break;
+            case 'set':
+            default:
+                query = `UPDATE articulo SET STOCK = ? WHERE CODIGO_BARRA = ?`;
+                params = [stockValue, codigoBarra];
+                break;
+        }
+
+        const result = await executeQuery(query, params, 'UPDATE_STOCK');
+
+        if (result.affectedRows === 0) {
+            logAdmin(`❌ Producto ${codigoBarra} no encontrado`, 'warn', 'PRODUCTOS');
+            return res.status(404).json({ 
+                error: 'Producto no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Stock del producto ${codigoBarra} actualizado exitosamente`, 'success', 'PRODUCTOS');
+        res.json({ 
+            success: true, 
+            message: 'Stock actualizado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando stock del producto ${codigoBarra}: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error al actualizar el stock',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const buscarProductosAvanzado = asyncHandler(async (req, res) => {
+    const { 
+        termino, 
+        categoria, 
+        estado, 
+        stockMinimo, 
+        stockMaximo, 
+        precioMinimo, 
+        precioMaximo,
+        limite = 50,
+        pagina = 1
+    } = req.query;
+    
+    const startTime = Date.now();
+    logAdmin(`Búsqueda avanzada de productos`, 'info', 'PRODUCTOS');
+    
+    try {
+        // Usar la columna de precio correcta según IVA configurado
+        const ivaLevel = parseInt(process.env.IVA) || 0;
+        let precioColumn = 'PRECIO_SIN_IVA';
+        
+        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
+        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
+        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
+        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+
+        // Construir consulta dinámica
+        let whereConditions = [];
+        let params = [];
+
+        // Búsqueda por término
+        if (termino && termino.trim().length >= 2) {
+            const searchPattern = `%${termino.trim()}%`;
+            whereConditions.push(`(art_desc_vta LIKE ? OR NOMBRE LIKE ? OR CODIGO_BARRA LIKE ?)`);
+            params.push(searchPattern, searchPattern, searchPattern);
+        }
+
+        // Filtros adicionales
+        if (categoria) {
+            whereConditions.push(`COD_DPTO = ?`);
+            params.push(categoria);
+        }
+
+        if (estado) {
+            switch (estado) {
+                case 'habilitado':
+                    whereConditions.push(`HABILITADO = 'S'`);
+                    break;
+                case 'deshabilitado':
+                    whereConditions.push(`HABILITADO = 'N'`);
+                    break;
+                case 'en_stock':
+                    whereConditions.push(`STOCK > 0`);
+                    break;
+                case 'sin_stock':
+                    whereConditions.push(`STOCK = 0`);
+                    break;
+                case 'stock_bajo':
+                    whereConditions.push(`STOCK > 0 AND STOCK <= 10`);
+                    break;
+            }
+        }
+
+        if (stockMinimo) {
+            whereConditions.push(`STOCK >= ?`);
+            params.push(parseInt(stockMinimo));
+        }
+
+        if (stockMaximo) {
+            whereConditions.push(`STOCK <= ?`);
+            params.push(parseInt(stockMaximo));
+        }
+
+        if (precioMinimo) {
+            whereConditions.push(`PRECIO >= ?`);
+            params.push(parseFloat(precioMinimo));
+        }
+
+        if (precioMaximo) {
+            whereConditions.push(`PRECIO <= ?`);
+            params.push(parseFloat(precioMaximo));
+        }
+
+        // Si no hay condiciones, agregar una condición por defecto
+        if (whereConditions.length === 0) {
+            whereConditions.push(`HABILITADO IN ('S', 'N')`);
+        }
+
+        const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+        // Paginación
+        const limitValue = Math.min(parseInt(limite) || 50, 200); // Máximo 200 por página
+        const offset = (parseInt(pagina) || 1 - 1) * limitValue;
+
+        const query = `
+            SELECT 
+                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
+                CODIGO_BARRA AS codigo_barra, 
+                COSTO AS costo, 
+                PRECIO AS precio,
+                ${precioColumn} AS precio_sin_iva, 
+                PRECIO_SIN_IVA_4 AS precio_sin_iva_4,
+                COD_DPTO AS categoria,
+                STOCK AS stock,
+                HABILITADO AS habilitado,
+                DESCRIPCION AS descripcion
+            FROM articulo 
+            ${whereClause}
+            ORDER BY COALESCE(art_desc_vta, NOMBRE) ASC
+            LIMIT ? OFFSET ?
+        `;
+
+        params.push(limitValue, offset);
+
+        // También obtener el total para la paginación
+        const countQuery = `
+            SELECT COUNT(*) as total 
+            FROM articulo 
+            ${whereClause}
+        `;
+
+        const countParams = params.slice(0, -2); // Remover LIMIT y OFFSET
+
+        const [results, countResult] = await Promise.all([
+            executeQuery(query, params, 'BUSQUEDA_AVANZADA'),
+            executeQuery(countQuery, countParams, 'COUNT_BUSQUEDA')
+        ]);
+
+        const total = countResult[0]?.total || 0;
+        const totalPaginas = Math.ceil(total / limitValue);
+
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Búsqueda avanzada completada: ${results.length} resultados (${duration}ms)`, 'success', 'PRODUCTOS');
+
+        res.json({
+            productos: results,
+            paginacion: {
+                pagina: parseInt(pagina) || 1,
+                limite: limitValue,
+                total: total,
+                totalPaginas: totalPaginas,
+                hayAnterior: (parseInt(pagina) || 1) > 1,
+                haySiguiente: (parseInt(pagina) || 1) < totalPaginas
+            },
+            filtros: {
+                termino: termino || '',
+                categoria: categoria || '',
+                estado: estado || '',
+                stockMinimo: stockMinimo || '',
+                stockMaximo: stockMaximo || '',
+                precioMinimo: precioMinimo || '',
+                precioMaximo: precioMaximo || ''
+            }
+        });
+    } catch (error) {
+        logAdmin(`❌ Error en búsqueda avanzada: ${error.message}`, 'error', 'PRODUCTOS');
+        res.status(500).json({ 
+            error: 'Error en la búsqueda de productos',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const obtenerCategoriasAdmin = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo categorías', 'info', 'CATEGORIAS');
+    
+    try {
+        const query = `
+            SELECT 
+                c.id_clasif,
+                c.NOM_CLASIF,
+                COUNT(a.COD_INTERNO) as cantidad_productos
+            FROM clasif c
+            LEFT JOIN articulo a ON c.DAT_CLASIF = a.COD_DPTO AND a.HABILITADO = 'S'
+            WHERE c.COD_CLASIF = 1 
+            GROUP BY c.id_clasif, c.NOM_CLASIF
+            HAVING cantidad_productos > 0
+            ORDER BY c.NOM_CLASIF ASC
+        `;
+        
+        const results = await executeQuery(query, [], 'CATEGORIAS_ADMIN');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} categorías obtenidas (${duration}ms)`, 'success', 'CATEGORIAS');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo categorías: ${error.message}`, 'error', 'CATEGORIAS');
+        console.error('Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Error obteniendo categorías',
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+
+
+
+
+
 module.exports = {
     // Autenticación y configuración
     loginCheck,
@@ -1295,5 +1958,16 @@ module.exports = {
     MailPedidoEnCamino,
     
     // Estadísticas
-    obtenerStats
+    obtenerStats,
+
+
+    obtenerTodosLosProductos,
+    crearProducto,
+    obtenerProductoPorCodigo,
+    eliminarProductoCompleto,
+    obtenerCategoriasProductos,
+    obtenerEstadisticasProductos,
+    actualizarStockProducto,
+    buscarProductosAvanzado,
+    obtenerCategoriasAdmin
 };

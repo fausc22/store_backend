@@ -53,6 +53,30 @@ router.delete('/eliminar-producto/:id', adminController.eliminarProducto);
 router.get('/productos', adminController.buscarProductoEnPedido);
 router.put('/actualizarInfoProducto/:id', adminController.actualizarInfoProducto);
 
+
+//NUEVAS RUTAS PARA INTERFAZ PRODUCTOS 
+// Obtener todos los productos (sin búsqueda)
+router.get('/productos-todos', adminController.obtenerTodosLosProductos);
+
+// Búsqueda avanzada de productos con filtros
+router.get('/productos-busqueda', adminController.buscarProductosAvanzado);
+
+// CRUD de productos individuales
+router.post('/productos', adminController.crearProducto);
+router.get('/productos/:codigo', adminController.obtenerProductoPorCodigo);
+router.delete('/productos/:codigo', adminController.eliminarProductoCompleto);
+
+// Gestión de stock específica
+router.put('/productos/:codigo/stock', adminController.actualizarStockProducto);
+router.get('/categorias', adminController.obtenerCategoriasAdmin);
+// Utilidades de productos
+router.get('/productos-categorias', adminController.obtenerCategoriasProductos);
+router.get('/productos-estadisticas', adminController.obtenerEstadisticasProductos);
+
+
+
+
+
 // ==============================================
 // RUTAS DE OFERTAS Y DESTACADOS
 // ==============================================
@@ -134,5 +158,14 @@ router.use('*', (req, res) => {
         ]
     });
 });
+
+
+
+
+
+
+
+
+
 
 module.exports = router;
