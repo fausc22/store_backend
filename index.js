@@ -31,6 +31,7 @@ const logApp = (message, level = 'info', module = 'APP') => {
 // ==============================================
 const allowedOrigins = [
     'http://localhost:3000',
+    'http://localhost:3001',
     'https://www.rsoftware.com.ar',
     'https://www.rsoftware.com.ar/tienda',
     'http://www.rsoftware.com.ar',
@@ -199,6 +200,9 @@ app.use("/publicidad", express.static("resources/publicidad", staticOptions));
 app.use("/images/products", express.static("resources/img_art", staticOptions));
 app.use("/images", express.static("public/images", staticOptions));
 
+
+
+
 logApp('✅ Rutas estáticas configuradas', 'success', 'STATIC');
 
 // ==============================================
@@ -251,6 +255,13 @@ app.get('/health', async (req, res) => {
         });
     }
 });
+
+
+
+
+
+
+
 
 // ==============================================
 // MIDDLEWARE DE MANEJO DE ERRORES GLOBAL

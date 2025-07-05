@@ -1,6 +1,7 @@
 
 const express = require('express');
 const adminController = require('../controllers/adminController');
+const imagenController = require('../controllers/imagenController');
 const router = express.Router();
 
 // ==============================================
@@ -106,8 +107,21 @@ router.post('/mailPedidoEnCamino', adminController.MailPedidoEnCamino);
 // RUTAS DE ESTADÍSTICAS Y REPORTES
 // ==============================================
 
-// Estadísticas del negocio
-router.get('/getStats', adminController.obtenerStats);
+
+
+ //Imágenes de publicidad
+router.post('/subir-imagen-publicidad', imagenController.subirImagenPublicidad);
+router.get('/imagenes-publicidad', imagenController.obtenerImagenesPublicidad);
+router.delete('/eliminar-imagen-publicidad/:nombreArchivo', imagenController.eliminarImagenPublicidad);
+
+// Imágenes de productos
+router.post('/subir-imagen-producto', imagenController.subirImagenProducto);
+router.get('/verificar-imagen-producto/:codigoBarra', imagenController.verificarImagenProducto);
+router.delete('/eliminar-imagen-producto/:codigoBarra', imagenController.eliminarImagenProducto);
+
+
+
+
 
 // ==============================================
 // MIDDLEWARE DE MANEJO DE ERRORES ESPECÍFICO

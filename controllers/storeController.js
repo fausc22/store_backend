@@ -87,30 +87,30 @@ const articulosOferta = asyncHandler(async (req, res) => {
 
         const query = `
             SELECT 
-                CODIGO_BARRA, 
-                COD_INTERNO, 
-                COD_IVA, 
-                ${precioColumn} AS PRECIO, 
-                COSTO, 
-                porc_impint, 
-                COD_DPTO, 
-                PESABLE, 
-                STOCK, 
-                art_desc_vta 
-            FROM articulo 
-            WHERE HABILITADO = 'S'
-            ORDER BY ${precioColumn} DESC
-            LIMIT 8
+                at.CODIGO_BARRA,
+                at.art_desc_vta,
+                a.${precioColumn} AS PRECIO,
+                at.PRECIO_DESC,
+                a.STOCK,
+                a.PESABLE,
+                a.COD_INTERNO
+            FROM articulo_temp at
+            INNER JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+            WHERE at.cat = '1' 
+            AND at.activo = 1 
+            AND a.HABILITADO = 'S'
+            AND (at.fecha_fin IS NULL OR at.fecha_fin > NOW())
+            ORDER BY at.orden ASC, at.fecha_inicio DESC;
         `;
 
         const results = await executeQuery(query, [], 'OFERTAS');
-        
+
         const duration = Date.now() - startTime;
         logController(`✅ ${results.length} artículos en oferta obtenidos (${duration}ms)`, 'success', 'OFERTAS');
-        
+
         res.json(results);
     } catch (error) {
-        logController(`❌ Error obteniendo ofertas: ${error.message}`, 'error', 'OFERTAS');
+        logController(`❌ Error obteniendo artículos en oferta: ${error.message}`, 'error', 'OFERTAS');
         res.status(500).json({ 
             error: 'Error obteniendo artículos en oferta',
             timestamp: new Date().toISOString()
@@ -147,7 +147,7 @@ const articulosDestacados = asyncHandler(async (req, res) => {
         const results = await executeQuery(query, [], 'DESTACADOS');
         
         const duration = Date.now() - startTime;
-        logController(`✅ ${results.length} artículos destacados obtenidos (${duration}ms)`, 'success', 'DESTACADOS');
+        logController(`✅ ${results.length} artculos destacados obtenidos (${duration}ms)`, 'success', 'DESTACADOS');
         
         res.json(results);
     } catch (error) {
