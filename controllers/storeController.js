@@ -767,7 +767,7 @@ const createPreference = asyncHandler(async (req, res) => {
         const body = {
             items: [
                 {
-                    title: `Pedido de ${nombreTienda}`,
+                    title: `Compra de ${nombreTienda}`,
                     quantity: 1,
                     unit_price: Number(total),
                     currency_id: "ARS"
@@ -835,7 +835,7 @@ const nuevoPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Insertar pedido principal (tu código existente)
+        // Insertar pedido principal
         const insertPedidoQuery = `
             INSERT INTO pedidos (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local)
             VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -855,38 +855,69 @@ const nuevoPedido = asyncHandler(async (req, res) => {
         const pedidoResult = await executeQuery(insertPedidoQuery, pedidoValues, 'INSERT_PEDIDO');
         const pedidoId = pedidoResult.insertId;
 
-        // --- INICIO DE LA MODIFICACIÓN PARA INSERTAR PRODUCTOS ---
+        // *** CORRECCIÓN: Procesar productos y calcular precio unitario ***
         if (productos && productos.length > 0) {
+            logController(`Procesando ${productos.length} productos para pedido ${pedidoId}`, 'info', 'PEDIDOS');
+            
+            // Procesar cada producto para corregir el precio
+            const productosCorregidos = productos.map(producto => {
+                const cantidad = parseInt(producto.cantidad) || 1;
+                const precioTotal = parseFloat(producto.precio) || 0;
+                
+                // *** CALCULAR PRECIO UNITARIO: precio total / cantidad ***
+                const precioUnitario = cantidad > 0 ? precioTotal / cantidad : precioTotal;
+                
+                logController(`Producto ${producto.codigo_barra}: ${cantidad} x $${precioUnitario.toFixed(2)} = $${precioTotal.toFixed(2)}`, 'info', 'PEDIDOS');
+                
+                return {
+                    id_pedido: pedidoId,
+                    codigo_barra: producto.codigo_barra,
+                    nombre_producto: producto.nombre_producto,
+                    cantidad: cantidad,
+                    precio: precioUnitario  // ← PRECIO UNITARIO CORRECTO
+                };
+            });
+
             // Genera una cadena de '(?, ?, ?, ?, ?)' por cada producto
-            const valuePlaceholders = productos.map(() => '(?, ?, ?, ?, ?)').join(', ');
+            const valuePlaceholders = productosCorregidos.map(() => '(?, ?, ?, ?, ?)').join(', ');
             
             const insertProductoQuery = `
                 INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio)
                 VALUES ${valuePlaceholders}
             `;
 
-            // Aplanar el array de arrays de productos a un solo array de valores
-            // Esto es necesario para que executeQuery reciba todos los parámetros en una lista plana
-            const flattenedProductosValues = productos.reduce((acc, producto) => {
+            // Aplanar el array con los precios unitarios corregidos
+            const flattenedProductosValues = productosCorregidos.reduce((acc, producto) => {
                 acc.push(
-                    pedidoId,
+                    producto.id_pedido,
                     producto.codigo_barra,
                     producto.nombre_producto,
                     producto.cantidad,
-                    producto.precio
+                    producto.precio  // ← Precio unitario correcto
                 );
                 return acc;
             }, []);
 
             await executeQuery(insertProductoQuery, flattenedProductosValues, 'INSERT_PRODUCTOS_PEDIDO');
+            
+            logController(`✅ ${productosCorregidos.length} productos insertados con precios unitarios correctos`, 'success', 'PEDIDOS');
         }
-        // --- FIN DE LA MODIFICACIÓN ---
 
         logController(`✅ Pedido creado exitosamente - ID: ${pedidoId}, Cliente: ${cliente}`, 'success', 'PEDIDOS');
-        res.json({ success: true, message: 'Pedido creado correctamente', pedido_id: pedidoId, timestamp: new Date().toISOString() });
+        res.json({ 
+            success: true, 
+            message: 'Pedido creado correctamente', 
+            pedido_id: pedidoId, 
+            timestamp: new Date().toISOString() 
+        });
+        
     } catch (error) {
         logController(`❌ Error creando pedido para ${cliente}: ${error.message}`, 'error', 'PEDIDOS');
-        res.status(500).json({ error: 'Error al crear el pedido', details: process.env.NODE_ENV !== 'production' ? error.message : undefined, timestamp: new Date().toISOString() });
+        res.status(500).json({ 
+            error: 'Error al crear el pedido', 
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined, 
+            timestamp: new Date().toISOString() 
+        });
     }
 });
 

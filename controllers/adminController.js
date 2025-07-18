@@ -204,7 +204,7 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
                 estado,
                 notas_local
             FROM pedidos 
-            WHERE estado IN ('pendiente', 'En proceso') 
+            WHERE estado IN ('pendiente', 'confirmado') 
             ORDER BY fecha DESC
         `;
 
@@ -466,6 +466,24 @@ const actualizarProducto = asyncHandler(async (req, res) => {
                 timestamp: new Date().toISOString()
             });
         }
+
+        // Actualizar totales del pedido
+        const updateQuery = `
+            UPDATE pedidos 
+            SET monto_total = (
+                SELECT SUM(subtotal) 
+                FROM pedidos_contenido 
+                WHERE id_pedido = ?
+            ),
+            cantidad_productos = (
+                SELECT SUM(cantidad) 
+                FROM pedidos_contenido 
+                WHERE id_pedido = ?
+            )
+            WHERE id_pedido = ?
+        `;
+
+        await executeQuery(updateQuery, [id_pedido, id_pedido, id_pedido], 'UPDATE_TOTALES_PEDIDO');
 
         logAdmin(`✅ Producto en pedido ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
         res.json({ 
@@ -896,7 +914,7 @@ let emailTransporter = null;
 
 const getEmailTransporter = () => {
     if (!emailTransporter) {
-        emailTransporter = nodemailer.createTransporter({
+        emailTransporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
             port: 587,
             secure: false,
