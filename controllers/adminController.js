@@ -467,23 +467,7 @@ const actualizarProducto = asyncHandler(async (req, res) => {
             });
         }
 
-        // Actualizar totales del pedido
-        const updateQuery = `
-            UPDATE pedidos 
-            SET monto_total = (
-                SELECT SUM(subtotal) 
-                FROM pedidos_contenido 
-                WHERE id_pedido = ?
-            ),
-            cantidad_productos = (
-                SELECT SUM(cantidad) 
-                FROM pedidos_contenido 
-                WHERE id_pedido = ?
-            )
-            WHERE id_pedido = ?
-        `;
-
-        await executeQuery(updateQuery, [id_pedido, id_pedido, id_pedido], 'UPDATE_TOTALES_PEDIDO');
+        
 
         logAdmin(`✅ Producto en pedido ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
         res.json({ 

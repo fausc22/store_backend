@@ -32,6 +32,7 @@ const logApp = (message, level = 'info', module = 'APP') => {
 const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:3001',
+    'https://tienda-puntosur.vercel.app',
     'https://www.rsoftware.com.ar',
     'https://www.rsoftware.com.ar/tienda',
     'http://www.rsoftware.com.ar',
