@@ -1,0 +1,13 @@
+RewriteEngine On
+
+# Redirección externa a backend HTTPS para APIs
+RewriteRule ^api/(.*)$ https://vps-5234411-x.dattaweb.com:4000/$1 [R=307,L]
+
+# Reglas para archivos estáticos (las que ya tienes)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^tienda/(.*)$ /tienda/index.html [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d  
+RewriteRule ^panel/(.*)$ /panel/index.html [L]

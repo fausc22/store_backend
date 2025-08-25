@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prueba de API - PuntoSur</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .test-section h3 {
+            color: #333;
+            margin-top: 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .result {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 3px;
+            padding: 10px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .success { border-color: #28a745; background: #d4edda; }
+        .error { border-color: #dc3545; background: #f8d7da; }
+        .info { border-color: #17a2b8; background: #d1ecf1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Prueba de Configuración API - PuntoSur</h1>
+        <p>Esta página te ayuda a probar que la configuración del proxy hacia tu backend esté funcionando correctamente.</p>
+        
+        <div class="test-section">
+            <h3>1. Health Check</h3>
+            <p>Prueba la conectividad básica con el backend:</p>
+            <button onclick="testHealth()">Probar Health Check</button>
+            <div id="health-result" class="result" style="display: none;"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>2. Rutas de Tienda</h3>
+            <p>Prueba las rutas de la tienda:</p>
+            <button onclick="testStore()">Probar /api/store</button>
+            <div id="store-result" class="result" style="display: none;"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>3. Rutas de Admin</h3>
+            <p>Prueba las rutas del panel administrativo:</p>
+            <button onclick="testAdmin()">Probar /api/admin</button>
+            <div id="admin-result" class="result" style="display: none;"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>4. Páginas Estáticas</h3>
+            <p>Prueba que las páginas estáticas funcionen:</p>
+            <button onclick="testTienda()">Probar /tienda</button>
+            <button onclick="testPanel()">Probar /panel</button>
+            <div id="static-result" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>5. Información del Sistema</h3>
+            <p>URL actual: <code id="current-url"></code></p>
+            <p>Timestamp: <code id="timestamp"></code></p>
+            <p><strong>✅ Rutas que deben funcionar:</strong></p>
+            <ul>
+                <li><code>/api/health</code> - Health check del backend</li>
+                <li><code>/api/store/*</code> - APIs de la tienda</li>
+                <li><code>/api/admin/*</code> - APIs del panel</li>
+                <li><code>/tienda/</code> - App estática de la tienda</li>
+                <li><code>/panel/</code> - App estática del panel</li>
+            </ul>
+            <p><strong>❌ Puerto 4000 bloqueado:</strong> Por seguridad, el puerto 4000 no es accesible directamente desde el navegador.</p>
+        </div>
+    </div>
+
+    <script>
+        // Mostrar información del sistema
+        document.getElementById('current-url').textContent = window.location.href;
+        document.getElementById('timestamp').textContent = new Date().toISOString();
+
+        async function makeRequest(url, method = 'GET', body = null) {
+            try {
+                const options = {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                };
+                
+                if (body) {
+                    options.body = JSON.stringify(body);
+                }
+                
+                const response = await fetch(url, options);
+                const data = await response.json();
+                
+                return {
+                    status: response.status,
+                    ok: response.ok,
+                    data: data,
+                    url: response.url
+                };
+            } catch (error) {
+                return {
+                    status: 'ERROR',
+                    ok: false,
+                    error: error.message
+                };
+            }
+        }
+        
+        function showResult(elementId, result) {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            
+            if (result.ok) {
+                element.className = 'result success';
+                element.textContent = `✅ Éxito (${result.status})\nURL final: ${result.url || 'N/A'}\n\n${JSON.stringify(result.data, null, 2)}`;
+            } else {
+                element.className = 'result error';
+                element.textContent = `❌ Error (${result.status})\n\n${result.error || JSON.stringify(result.data, null, 2)}`;
+            }
+        }
+        
+        async function testHealth() {
+            const result = await makeRequest('/api/health');
+            showResult('health-result', result);
+        }
+        
+        async function testStore() {
+            // Prueba endpoint básico de store
+            const result = await makeRequest('/api/store/');
+            showResult('store-result', result);
+        }
+        
+        async function testAdmin() {
+            // Prueba endpoint básico de admin
+            const result = await makeRequest('/api/admin/');
+            showResult('admin-result', result);
+        }
+        
+        async function testTienda() {
+            // Prueba página estática de la tienda
+            try {
+                const response = await fetch('/tienda/');
+                const text = await response.text();
+                const element = document.getElementById('static-result');
+                element.style.display = 'block';
+                element.className = 'result success';
+                element.textContent = `✅ Tienda cargada (${response.status})\n\nContenido:\n${text.substring(0, 200)}...`;
+            } catch (error) {
+                const element = document.getElementById('static-result');
+                element.style.display = 'block';
+                element.className = 'result error';
+                element.textContent = `❌ Error cargando tienda: ${error.message}`;
+            }
+        }
+        
+        async function testPanel() {
+            // Prueba página estática del panel
+            try {
+                const response = await fetch('/panel/');
+                const text = await response.text();
+                const element = document.getElementById('static-result');
+                element.style.display = 'block';
+                element.className = 'result success';
+                element.textContent = `✅ Panel cargado (${response.status})\n\nContenido:\n${text.substring(0, 200)}...`;
+            } catch (error) {
+                const element = document.getElementById('static-result');
+                element.style.display = 'block';
+                element.className = 'result error';
+                element.textContent = `❌ Error cargando panel: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

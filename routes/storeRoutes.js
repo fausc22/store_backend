@@ -6,6 +6,11 @@ const router = express.Router();
 // RUTAS EXISTENTES (las que ya tienes)
 router.get('/articulosOF', storeController.articulosOferta);
 router.get('/articulosDEST', storeController.articulosDestacados);
+
+router.get('/productosMAIN/:page?/:limit?', storeController.productosMain);
+router.get('/buscar/:searchTerm/:page?/:limit?', storeController.buscarProductos);
+router.get('/articulos/:categoryId/:page?/:limit?', storeController.filtradoCategorias);
+
 router.get('/productosMAIN', storeController.productosMain);
 router.get('/articulos/:categoryId', storeController.filtradoCategorias);
 router.get('/buscar', storeController.buscarProductos);
@@ -22,7 +27,7 @@ router.get('/variablesenv', storeController.variablesEnv);
 router.post('/mailPedidoRealizado', storeController.MailPedidoRealizado);
 router.post('/NuevoPedido', storeController.nuevoPedido);
 
-router.get("/getImagenesPublicidad", storeController.getImagenesPublicidad);
+router.get("/getShowcase", storeController.getShowcase);
 router.post("/subirImagenPublicidad", storeController.subirImagenPublicidad);
 router.delete("/eliminarImagenPublicidad/:nombreImagen", storeController.eliminarImagenPublicidad);
 
@@ -36,6 +41,7 @@ router.delete('/ofertas-destacados/:id', storeController.eliminarOfertaDestacado
 
 
 router.post('/searchAddresses', storeController.searchAddresses);
+router.post('/reverseGeocode', storeController.reverseGeocode);
 // Ruta principal para obtener imagen de producto
 router.get('/image/:codigo_barra', storeController.getProductImage);
 // Ruta para servir imágenes internas directamente

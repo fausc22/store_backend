@@ -3,7 +3,7 @@ const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
 const morgan = require('morgan');
-const { initializeDatabase, logConnection, getPoolStats } = require('./controllers/db');
+const { initializeDatabase, logConnection, getPoolStats } = require('./controllers/dbPS');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -198,7 +198,7 @@ const staticOptions = {
     lastModified: true
 };
 
-app.use("/publicidad", express.static("resources/publicidad", staticOptions));
+app.use("/showcase", express.static("resources/showcase", staticOptions));
 app.use("/images/products", express.static("resources/img_art", staticOptions));
 app.use("/images", express.static("public/images", staticOptions));
 

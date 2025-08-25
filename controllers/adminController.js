@@ -930,16 +930,17 @@ const MailPedidoProcesado = asyncHandler(async (req, res) => {
         const templatePath = path.join(__dirname, '../resources/email_template/pedido_confirmado.html');
         let htmlTemplate = await fs.readFile(templatePath, 'utf8');
 
+        // ITEMS CON ESTILOS MEJORADOS
         let itemsHtml = '';
         items.forEach(item => {
             itemsHtml += `<tr>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.name || item.nombre_producto}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.quantity || item.cantidad}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.price || item.precio}
                 </td>
             </tr>`;
@@ -986,6 +987,7 @@ const MailPedidoProcesado = asyncHandler(async (req, res) => {
     }
 });
 
+// FUNCIÓN PEDIDO EN CAMINO
 const MailPedidoEnCamino = asyncHandler(async (req, res) => {
     const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
     
@@ -1002,16 +1004,17 @@ const MailPedidoEnCamino = asyncHandler(async (req, res) => {
         const templatePath = path.join(__dirname, '../resources/email_template/pedido_camino.html');
         let htmlTemplate = await fs.readFile(templatePath, 'utf8');
 
+        // ITEMS CON ESTILOS MEJORADOS
         let itemsHtml = '';
         items.forEach(item => {
             itemsHtml += `<tr>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.name || item.nombre_producto}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.quantity || item.cantidad}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.price || item.precio}
                 </td>
             </tr>`;

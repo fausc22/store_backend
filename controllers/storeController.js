@@ -73,6 +73,40 @@ const validatePaginationParams = (req) => {
     return { page, limit, offset };
 };
 
+
+// Función helper mejorada para obtener parámetros
+const getParametersFromRequest = (req) => {
+    // Intentar obtener de path parameters primero, luego de query parameters
+    let page = req.params.page || req.query.page || 1;
+    let limit = req.params.limit || req.query.limit || 30;
+    let searchTerm = req.params.searchTerm || req.query.q;
+    
+    // Decodificar searchTerm si viene de URL
+    if (searchTerm) {
+        searchTerm = decodeURIComponent(searchTerm);
+    }
+    
+    // Validar y convertir a números
+    page = Math.max(1, parseInt(page) || 1);
+    limit = Math.min(100, Math.max(1, parseInt(limit) || 30));
+    const offset = (page - 1) * limit;
+    
+    console.log(`📋 Parámetros extraídos:`, {
+        page,
+        limit,
+        offset,
+        searchTerm,
+        categoryId: req.params.categoryId,
+        source: req.params.page ? 'path' : 'query',
+        allParams: {
+            params: req.params,
+            query: req.query
+        }
+    });
+    
+    return { page, limit, offset, searchTerm };
+};
+
 // ==============================================
 // CONTROLADORES DE PRODUCTOS OPTIMIZADOS
 // ==============================================
@@ -162,14 +196,7 @@ const articulosDestacados = asyncHandler(async (req, res) => {
 // PRODUCTOS PRINCIPALES CON PAGINACIÓN OPTIMIZADA
 const productosMain = asyncHandler(async (req, res) => {
     const startTime = Date.now();
-
-    let page = Number(req.query.page);
-    let limit = Number(req.query.limit);
-
-    if (!Number.isInteger(page) || page < 1) page = 1;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) limit = 30;
-
-    const offset = (page - 1) * limit;
+    const { page, limit, offset } = getParametersFromRequest(req);
 
     logController(`Obteniendo productos principales - Página ${page}, Límite ${limit}`, 'info', 'PRODUCTOS_MAIN');
 
@@ -225,12 +252,17 @@ const productosMain = asyncHandler(async (req, res) => {
 const filtradoCategorias = asyncHandler(async (req, res) => {
     const startTime = Date.now();
     const categoryName = req.params.categoryId;
-    const { page, limit, offset } = validatePaginationParams(req);
+    
+    // 🆕 CORREGIDO: Usar la función helper para obtener parámetros de path y query
+    const { page, limit, offset } = getParametersFromRequest(req);
     
     logController(`Filtrando por categoría: ${categoryName} - Página ${page}`, 'info', 'FILTRO_CATEGORIA');
     
     if (!categoryName || categoryName.trim().length === 0) {
-        return res.status(400).json({ error: 'Nombre de categoría requerido' });
+        return res.status(400).json({ 
+            error: 'Nombre de categoría requerido',
+            timestamp: new Date().toISOString()
+        });
     }
 
     try {
@@ -273,7 +305,7 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
         const response = createPaginatedResponse(products, page, limit, totalCount);
         
         const duration = Date.now() - startTime;
-        logController(`✅ ${products.length} productos de categoría "${categoryName}" obtenidos (${duration}ms)`, 'success', 'FILTRO_CATEGORIA');
+        logController(`✅ ${products.length} productos de categoría "${categoryName}" obtenidos (${duration}ms) - Página ${page}/${response.pagination.totalPages}`, 'success', 'FILTRO_CATEGORIA');
         
         res.json(response);
     } catch (error) {
@@ -289,22 +321,31 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
 // BÚSQUEDA DE PRODUCTOS OPTIMIZADA
 const buscarProductos = asyncHandler(async (req, res) => {
     const startTime = Date.now();
-    const searchTerm = req.query.q?.trim();
-    const { page, limit, offset } = validatePaginationParams(req);
+    const { page, limit, offset, searchTerm } = getParametersFromRequest(req);
     
     logController(`Búsqueda de productos: "${searchTerm}" - Página ${page}`, 'info', 'BUSQUEDA');
     
-    if (!searchTerm || searchTerm.length < 2) {
+    // Validación mejorada
+    if (!searchTerm || searchTerm.trim().length < 2) {
+        console.log(`❌ Término de búsqueda inválido:`, {
+            searchTerm,
+            trimmed: searchTerm?.trim(),
+            length: searchTerm?.trim()?.length || 0,
+            params: req.params,
+            query: req.query
+        });
+        
         return res.status(400).json({ 
             error: 'Término de búsqueda debe tener al menos 2 caracteres',
+            received: searchTerm,
             timestamp: new Date().toISOString()
         });
     }
 
     try {
         const precioColumn = getPrecioColumn();
-        const searchPattern = `%${searchTerm}%`;
-        const exactStart = `${searchTerm}%`;
+        const searchPattern = `%${searchTerm.trim()}%`;
+        const exactStart = `${searchTerm.trim()}%`;
 
         const countQuery = `
             SELECT COUNT(*) as total 
@@ -757,7 +798,7 @@ const createPreference = asyncHandler(async (req, res) => {
     logController(`Creando preferencia MercadoPago - Total: ${total}`, 'info', 'MERCADOPAGO');
     
     if (!total || isNaN(total) || total <= 0) {
-        return res.status(400).json({ 
+        return res.status(400).json({
             error: 'Total inválido para el pago',
             timestamp: new Date().toISOString()
         });
@@ -774,21 +815,23 @@ const createPreference = asyncHandler(async (req, res) => {
                 }
             ],
             back_urls: {
-                success: "http://localhost:3000/confirmacion",
-                failure: "http://localhost:3000/confirmacion", 
-                pending: "http://localhost:3000/confirmacion"
+                success: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=success",
+                failure: "https://vps-5234411-x.dattaweb.com/tienda/pago-rechazado?status=failure", 
+                pending: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=pending"
             },
+            auto_return: "approved", // Redirección automática cuando se aprueba
             payment_methods: {
                 installments: 12
-            }
+            },
+            external_reference: `pedido_${Date.now()}` // Para identificar el pedido
         };
-
+        
         const preference = new mercadopago.Preference(client);
         const result = await preference.create({ body });
         
         logController(`✅ Preferencia MercadoPago creada: ${result.id} - ${total}`, 'success', 'MERCADOPAGO');
         
-        res.json({ 
+        res.json({
             id: result.id,
             init_point: result.init_point,
             sandbox_init_point: result.sandbox_init_point
@@ -796,7 +839,7 @@ const createPreference = asyncHandler(async (req, res) => {
         
     } catch (error) {
         logController(`❌ Error creando preferencia MercadoPago: ${error.message}`, 'error', 'MERCADOPAGO');
-        res.status(500).json({ 
+        res.status(500).json({
             error: "Error al crear la preferencia de pago",
             details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
             timestamp: new Date().toISOString()
@@ -933,16 +976,17 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
             'utf8'
         );
 
+        // ITEMS CON ESTILOS MEJORADOS
         let itemsHtml = '';
         items.forEach(item => {
             itemsHtml += `<tr>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.name}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.quantity}
                 </td>
-                <td align="left" bgcolor="#eeeeee" style="font-family: Open Sans, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; padding: 10px;">
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
                     ${item.price}
                 </td>
             </tr>`;
@@ -979,7 +1023,7 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
                 {
                     filename: 'logo.jpg',
                     path: path.join(__dirname, '../resources/img/logo.jpg'),
-                    cid: 'logo'
+                    cid: 'logo' // Esta imagen ahora aparece en el header
                 }
             ]
         });
@@ -1004,7 +1048,7 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
 // GESTIÓN DE IMÁGENES OPTIMIZADA
 // ==============================================
 
-const publicidadPath = path.join(__dirname, "../resources/publicidad");
+const showcasePath = path.join(__dirname, "../resources/showcase");
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, publicidadPath);
@@ -1027,15 +1071,15 @@ const upload = multer({
     }
 });
 
-const getImagenesPublicidad = asyncHandler(async (req, res) => {
-    logController('Obteniendo imágenes de publicidad', 'info', 'IMAGENES');
+const getShowcase = asyncHandler(async (req, res) => {
+    logController('Obteniendo imágenes de showcase', 'info', 'IMAGENES');
     
     try {
-        const files = await fs.promises.readdir(publicidadPath);
+        const files = await fs.promises.readdir(showcasePath);
         const imagenes = files.filter(file => /\.(jpg|jpeg|png|gif|webp)$/i.test(file))
-                            .map(file => `/publicidad/${file}`);
-        
-        logController(`✅ ${imagenes.length} imágenes de publicidad encontradas`, 'success', 'IMAGENES');
+                            .map(file => `/showcase/${file}`);
+
+        logController(`✅ ${imagenes.length} imágenes de showcase encontradas`, 'success', 'IMAGENES');
         res.json(imagenes);
     } catch (error) {
         logController(`❌ Error obteniendo imágenes: ${error.message}`, 'error', 'IMAGENES');
@@ -1295,58 +1339,18 @@ const searchAddresses = asyncHandler(async (req, res) => {
     }
 
     try {
-        const params = new URLSearchParams({
-            q: query,
-            key: process.env.OPENCAGE_API_KEY,
-            limit: limit,
-            countrycode: country,
-            language: 'es',
-            proximity: '-31.4201,-64.1888', // Córdoba
-            min_confidence: 3
-        });
-
-        const response = await axios.get(
-            `https://api.opencagedata.com/geocode/v1/json?${params}`,
-            { timeout: 10000 }
-        );
+        // 🆕 MEJORADO: Múltiples estrategias de búsqueda
+        const searchStrategies = await executeMultipleSearchStrategies(query, country, limit);
         
-        if (response.data.results && response.data.results.length > 0) {
-            const processedResults = response.data.results.map((result) => {
-                const { lat, lng } = result.geometry;
-                const distance = getDistanceFromLatLonInKm(
-                    storeCoordinates.lat, 
-                    storeCoordinates.lng, 
-                    lat, 
-                    lng
-                );
-                const shippingCost = calculateShippingCost(distance);
-                
-                return {
-                    formatted: result.formatted,
-                    distance,
-                    shippingCost,
-                    confidence: result.confidence,
-                    components: result.components
-                };
-            });
+        const duration = Date.now() - startTime;
+        logController(`✅ ${searchStrategies.results.length} direcciones encontradas (${duration}ms)`, 'success', 'DIRECCIONES');
 
-            const duration = Date.now() - startTime;
-            logController(`✅ ${processedResults.length} direcciones encontradas (${duration}ms)`, 'success', 'DIRECCIONES');
-
-            res.json({ 
-                results: processedResults,
-                success: true,
-                timestamp: new Date().toISOString()
-            });
-        } else {
-            logController(`⚠️  No se encontraron direcciones para: "${query}"`, 'warn', 'DIRECCIONES');
-            res.json({ 
-                results: [],
-                success: true,
-                message: 'No se encontraron direcciones',
-                timestamp: new Date().toISOString()
-            });
-        }
+        res.json({
+            results: searchStrategies.results,
+            success: true,
+            searchInfo: searchStrategies.searchInfo,
+            timestamp: new Date().toISOString()
+        });
     } catch (error) {
         const duration = Date.now() - startTime;
         logController(`❌ Error buscando direcciones (${duration}ms): ${error.message}`, 'error', 'DIRECCIONES');
@@ -1354,6 +1358,343 @@ const searchAddresses = asyncHandler(async (req, res) => {
         res.status(500).json({ 
             message: 'Error al buscar direcciones',
             results: [],
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// 🆕 NUEVA FUNCIÓN: Múltiples estrategias de búsqueda
+const executeMultipleSearchStrategies = async (originalQuery, country, limit) => {
+    const searchInfo = {
+        originalQuery,
+        strategiesUsed: [],
+        totalApiCalls: 0,
+        bestStrategy: null
+    };
+
+    let allResults = [];
+
+    // Estrategia 1: Búsqueda directa
+    try {
+        const directResults = await searchWithOpenCage(originalQuery, country, limit, {
+            min_confidence: 2,
+            proximity: '-31.4201,-64.1888', // Córdoba
+            language: 'es'
+        });
+        
+        allResults = allResults.concat(directResults.map(r => ({ ...r, strategy: 'direct' })));
+        searchInfo.strategiesUsed.push('direct');
+        searchInfo.totalApiCalls++;
+        
+        console.log(`📍 Estrategia directa: ${directResults.length} resultados`);
+    } catch (error) {
+        console.log('❌ Error en búsqueda directa:', error.message);
+    }
+
+    // Estrategia 2: Búsqueda con contexto de Córdoba si no se especifica
+    if (!originalQuery.toLowerCase().includes('córdoba') && 
+        !originalQuery.toLowerCase().includes('cordoba') && 
+        allResults.length < 3) {
+        try {
+            const contextualQuery = `${originalQuery}, Córdoba, Argentina`;
+            const contextualResults = await searchWithOpenCage(contextualQuery, country, limit, {
+                min_confidence: 1,
+                proximity: '-31.4201,-64.1888'
+            });
+            
+            allResults = allResults.concat(contextualResults.map(r => ({ ...r, strategy: 'contextual' })));
+            searchInfo.strategiesUsed.push('contextual');
+            searchInfo.totalApiCalls++;
+            
+            console.log(`📍 Estrategia contextual: ${contextualResults.length} resultados`);
+        } catch (error) {
+            console.log('❌ Error en búsqueda contextual:', error.message);
+        }
+    }
+
+    // Estrategia 3: Búsqueda con variaciones comunes (solo si tenemos pocos resultados)
+    if (allResults.length < 2) {
+        const variations = generateAddressVariations(originalQuery);
+        
+        for (const variation of variations.slice(0, 2)) { // Máximo 2 variaciones
+            try {
+                const variationResults = await searchWithOpenCage(variation, country, Math.ceil(limit/2), {
+                    min_confidence: 1,
+                    proximity: '-31.4201,-64.1888'
+                });
+                
+                allResults = allResults.concat(variationResults.map(r => ({ ...r, strategy: 'variation', originalVariation: variation })));
+                searchInfo.totalApiCalls++;
+                
+                console.log(`📍 Variación "${variation}": ${variationResults.length} resultados`);
+            } catch (error) {
+                console.log(`❌ Error en variación "${variation}":`, error.message);
+            }
+        }
+        
+        if (variations.length > 0) {
+            searchInfo.strategiesUsed.push('variations');
+        }
+    }
+
+    // Procesar y deduplicar resultados
+    const processedResults = processAndDeduplicateResults(allResults, limit);
+    
+    // Determinar la mejor estrategia
+    searchInfo.bestStrategy = determineBestStrategy(processedResults);
+    
+    return {
+        results: processedResults,
+        searchInfo
+    };
+};
+
+// 🆕 NUEVA FUNCIÓN: Búsqueda con OpenCage (wrapper)
+const searchWithOpenCage = async (query, country, limit, options = {}) => {
+    const params = new URLSearchParams({
+        q: query,
+        key: process.env.OPENCAGE_API_KEY,
+        limit: limit,
+        countrycode: country,
+        language: 'es',
+        ...options
+    });
+
+    const response = await axios.get(
+        `https://api.opencagedata.com/geocode/v1/json?${params}`,
+        { timeout: 8000 }
+    );
+
+    if (response.data.results && response.data.results.length > 0) {
+        return response.data.results.map((result) => {
+            const { lat, lng } = result.geometry;
+            const distance = getDistanceFromLatLonInKm(
+                storeCoordinates.lat, 
+                storeCoordinates.lng, 
+                lat, 
+                lng
+            );
+            const shippingCost = calculateShippingCost(distance);
+            
+            return {
+                formatted: result.formatted,
+                distance,
+                shippingCost,
+                confidence: result.confidence,
+                components: result.components,
+                coordinates: { lat, lng }
+            };
+        });
+    }
+    
+    return [];
+};
+
+// 🆕 NUEVA FUNCIÓN: Generar variaciones de direcciones
+const generateAddressVariations = (originalQuery) => {
+    const variations = [];
+    const query = originalQuery.toLowerCase().trim();
+    
+    // Expandir abreviaciones comunes
+    const abbreviations = {
+        'av ': 'avenida ',
+        'av.': 'avenida',
+        'avda': 'avenida',
+        'bv ': 'bulevar ',
+        'bv.': 'bulevar',
+        'dr ': 'doctor ',
+        'dr.': 'doctor',
+        'gral ': 'general ',
+        'gral.': 'general',
+        'san ': 'san ',
+        'sta ': 'santa ',
+        'pte ': 'presidente '
+    };
+
+    let expandedQuery = query;
+    for (const [abbrev, full] of Object.entries(abbreviations)) {
+        if (expandedQuery.includes(abbrev)) {
+            expandedQuery = expandedQuery.replace(new RegExp(abbrev, 'g'), full);
+            variations.push(expandedQuery);
+            break; // Solo una expansión por consulta
+        }
+    }
+
+    // Si no hay número, sugerir buscar solo la calle
+    const hasNumber = /\d/.test(query);
+    if (!hasNumber && !query.includes('esquina')) {
+        // Intentar buscar solo el nombre de la calle para encontrar la zona
+        variations.push(`${query} córdoba capital`);
+    }
+
+    // Quitar duplicados y la consulta original
+    return [...new Set(variations)].filter(v => v !== originalQuery && v !== query);
+};
+
+// 🆕 NUEVA FUNCIÓN: Procesar y deduplicar resultados
+const processAndDeduplicateResults = (allResults, limit) => {
+    // Deduplicar por dirección formateada (manteniendo el mejor resultado)
+    const deduplicatedMap = new Map();
+    
+    for (const result of allResults) {
+        const key = result.formatted.toLowerCase().trim();
+        
+        if (!deduplicatedMap.has(key) || 
+            deduplicatedMap.get(key).confidence < result.confidence) {
+            deduplicatedMap.set(key, result);
+        }
+    }
+    
+    // Convertir a array y ordenar por relevancia
+    let processedResults = Array.from(deduplicatedMap.values());
+    
+    // Ordenar por: completitud, confianza, distancia
+    processedResults.sort((a, b) => {
+        // Priorizar direcciones con número de casa
+        const aComplete = !!(a.components?.house_number && a.components?.road);
+        const bComplete = !!(b.components?.house_number && b.components?.road);
+        
+        if (aComplete !== bComplete) return bComplete - aComplete;
+        
+        // Luego por confianza
+        if (Math.abs(a.confidence - b.confidence) > 0.1) {
+            return b.confidence - a.confidence;
+        }
+        
+        // Finalmente por distancia (más cerca mejor)
+        return a.distance - b.distance;
+    });
+    
+    // Limitar resultados
+    return processedResults.slice(0, limit);
+};
+
+// 🆕 NUEVA FUNCIÓN: Determinar mejor estrategia
+const determineBestStrategy = (results) => {
+    if (results.length === 0) return 'none';
+    
+    const strategies = results.reduce((acc, result) => {
+        acc[result.strategy] = (acc[result.strategy] || 0) + 1;
+        return acc;
+    }, {});
+    
+    return Object.keys(strategies).reduce((a, b) => strategies[a] > strategies[b] ? a : b);
+};
+
+const reverseGeocode = asyncHandler(async (req, res) => {
+    const { lat, lng } = req.body;
+    const startTime = Date.now();
+
+    logController(`Geocodificación inversa: ${lat}, ${lng}`, 'info', 'GEOCODING');
+
+    if (!lat || !lng) {
+        return res.status(400).json({ 
+            message: 'Latitud y longitud son requeridas',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Validar coordenadas
+        const latitude = parseFloat(lat);
+        const longitude = parseFloat(lng);
+        
+        if (isNaN(latitude) || isNaN(longitude)) {
+            return res.status(400).json({ 
+                message: 'Coordenadas inválidas',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // Usar OpenCage para geocodificación inversa
+        const params = new URLSearchParams({
+            q: `${latitude},${longitude}`,
+            key: process.env.OPENCAGE_API_KEY,
+            language: 'es',
+            limit: 1,
+            no_annotations: 1,
+            roadinfo: 1,
+            countrycode: 'ar' // Limitar a Argentina
+        });
+
+        const response = await axios.get(
+            `https://api.opencagedata.com/geocode/v1/json?${params}`,
+            { timeout: 8000 }
+        );
+
+        if (response.data.results && response.data.results.length > 0) {
+            const result = response.data.results[0];
+            
+            // Crear dirección formateada más limpia
+            let formattedAddress = result.formatted;
+            
+            if (result.components) {
+                const parts = [];
+                
+                // Construir dirección paso a paso
+                if (result.components.house_number && result.components.road) {
+                    parts.push(`${result.components.road} ${result.components.house_number}`);
+                } else if (result.components.road) {
+                    parts.push(result.components.road);
+                }
+                
+                // Agregar barrio/zona
+                if (result.components.neighbourhood) {
+                    parts.push(result.components.neighbourhood);
+                } else if (result.components.suburb) {
+                    parts.push(result.components.suburb);
+                } else if (result.components.quarter) {
+                    parts.push(result.components.quarter);
+                }
+                
+                // Agregar ciudad
+                if (result.components.city) {
+                    parts.push(result.components.city);
+                } else if (result.components.town) {
+                    parts.push(result.components.town);
+                } else if (result.components.municipality) {
+                    parts.push(result.components.municipality);
+                }
+                
+                // Si tenemos partes, usar esa dirección
+                if (parts.length > 0) {
+                    formattedAddress = parts.join(', ');
+                }
+            }
+
+            const duration = Date.now() - startTime;
+            logController(`✅ Geocodificación exitosa (${duration}ms): ${formattedAddress}`, 'success', 'GEOCODING');
+
+            res.json({
+                formatted: formattedAddress,
+                components: result.components,
+                confidence: result.confidence,
+                success: true,
+                timestamp: new Date().toISOString()
+            });
+
+        } else {
+            const duration = Date.now() - startTime;
+            logController(`⚠️ No se encontró dirección para coordenadas (${duration}ms)`, 'warning', 'GEOCODING');
+            
+            res.json({
+                formatted: `Ubicación (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`,
+                components: {},
+                confidence: 0,
+                success: false,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logController(`❌ Error en geocodificación inversa (${duration}ms): ${error.message}`, 'error', 'GEOCODING');
+        
+        res.status(500).json({ 
+            message: 'Error en geocodificación inversa',
+            formatted: `Ubicación (${lat}, ${lng})`,
+            components: {},
+            success: false,
             timestamp: new Date().toISOString()
         });
     }
@@ -1425,8 +1766,10 @@ const getProductImage = asyncHandler(async (req, res) => {
         }
         
         if (internalUrl) {
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            const fullInternalUrl = `${baseUrl}${internalUrl}`;
+            // 🆕 CORREGIDO: Construir URL basada en el request actual, no hardcodeada
+            const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+            const host = req.get('host');
+            const fullInternalUrl = `${protocol}://${host}${internalUrl}`;
             
             imageCache.set(cacheKey, {
                 url: fullInternalUrl,
@@ -1442,9 +1785,10 @@ const getProductImage = asyncHandler(async (req, res) => {
             });
         }
 
-        // 3. Imagen placeholder
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const placeholderUrl = `${baseUrl}/images/placeholder.png`;
+        // 3. Imagen placeholder - 🆕 CORREGIDO
+        const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+        const host = "vps-5234411-x.dattaweb.com/api";
+        const placeholderUrl = `${protocol}://${host}/images/placeholder.png`;
         
         imageCache.set(cacheKey, {
             url: placeholderUrl,
@@ -1452,7 +1796,7 @@ const getProductImage = asyncHandler(async (req, res) => {
             timestamp: Date.now()
         });
         
-        logController(`⚠️  Usando placeholder para: ${codigo_barra}`, 'warn', 'PRODUCT_IMAGE');
+        logController(`⚠️ Usando placeholder para: ${codigo_barra}`, 'warn', 'PRODUCT_IMAGE');
         return res.json({
             success: true,
             imageUrl: placeholderUrl,
@@ -1462,8 +1806,10 @@ const getProductImage = asyncHandler(async (req, res) => {
     } catch (error) {
         logController(`❌ Error obteniendo imagen ${codigo_barra}: ${error.message}`, 'error', 'PRODUCT_IMAGE');
         
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const placeholderUrl = `${baseUrl}/images/placeholder.png`;
+        // 🆕 CORREGIDO: Placeholder de fallback
+        const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+        const host = req.get('host');
+        const placeholderUrl = `${protocol}://${host}/images/placeholder.png`;
         
         return res.json({
             success: true,
@@ -1473,6 +1819,8 @@ const getProductImage = asyncHandler(async (req, res) => {
         });
     }
 });
+
+
 
 // Función helper para verificar si una imagen externa existe
 const checkImageExists = async (url) => {
@@ -1573,7 +1921,7 @@ module.exports = {
     variablesEnv,
     MailPedidoRealizado,
     nuevoPedido,
-    getImagenesPublicidad,
+    getShowcase,
     subirImagenPublicidad,
     eliminarImagenPublicidad,
     verificarImagenArticulo,
@@ -1585,5 +1933,6 @@ module.exports = {
     getProductImage,
     clearImageCache,
     getImageCacheStats,
-    serveInternalImage
+    serveInternalImage,
+    reverseGeocode
 };
