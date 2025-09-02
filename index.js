@@ -3,10 +3,12 @@ const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
 const morgan = require('morgan');
+const https = require('https');
+const fs = require('fs');
 const { initializeDatabase, logConnection, getPoolStats } = require('./controllers/dbPS');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = 3002;
 
 // ==============================================
 // SISTEMA DE LOGS CENTRALIZADO
@@ -30,14 +32,11 @@ const logApp = (message, level = 'info', module = 'APP') => {
 // CONFIGURACIÓN DE CORS MEJORADA
 // ==============================================
 const allowedOrigins = [
+    'http://localhost:3000/',
     'http://localhost:3000',
-    'http://localhost:3001',
-    'https://tienda-puntosur.vercel.app',
-    'https://www.rsoftware.com.ar',
-    'https://panel-puntosur.vercel.app',
-    'https://www.rsoftware.com.ar/tienda',
-    'http://www.rsoftware.com.ar',
-    'http://www.rsoftware.com.ar/tienda',
+    'http://localhost:3001/',
+    'https://vps-5234411-x.dattaweb.com/',
+    'https://vps-5234411-x.dattaweb.com'
 ];
 
 const corsOptions = {
@@ -149,16 +148,56 @@ app.use((req, res, next) => {
 // Rate limiting básico (middleware simple)
 const requestCounts = new Map();
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutos
-const RATE_LIMIT_MAX = 1000; // máximo requests por ventana
 
-app.use((req, res, next) => {
-    const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-    const now = Date.now();
+// Configuración de límites por tipo de endpoint
+const RATE_LIMITS = {
+    // Navegación general - muy permisivo
+    general: {
+        max: 5000,  // 5000 requests por 15 minutos (≈5.5 requests/segundo)
+        routes: ['/store/productos', '/store/categorias', '/store/buscar', '/store/ofertas', '/store/destacados']
+    },
+    // Imágenes - muy permisivo para carga de productos
+    images: {
+        max: 3000,  // 3000 requests por 15 minutos
+        routes: ['/images/', '/showcase/', '/store/imagen-producto']
+    },
+    // Carrito y checkout - moderado
+    cart: {
+        max: 1000,  // 1000 requests por 15 minutos
+        routes: ['/store/carrito', '/store/checkout', '/store/calcular-envio']
+    },
+    // Operaciones sensibles - más restrictivo
+    sensitive: {
+        max: 200,   // 200 requests por 15 minutos
+        routes: ['/store/pedido', '/store/pago', '/store/email']
+    }
     
-    if (!requestCounts.has(clientIp)) {
-        requestCounts.set(clientIp, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+};
+
+// Función para determinar el tipo de endpoint
+const getEndpointType = (path) => {
+    for (const [type, config] of Object.entries(RATE_LIMITS)) {
+        if (config.routes.some(route => path.startsWith(route))) {
+            return type;
+        }
+    }
+    return 'general'; // Por defecto
+};
+
+// Middleware de rate limiting mejorado
+app.use((req, res, next) => {
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.connection.remoteAddress;
+    const now = Date.now();
+    const endpointType = getEndpointType(req.path);
+    const limit = RATE_LIMITS[endpointType].max;
+    
+    // Clave única por IP y tipo de endpoint
+    const key = `${clientIp}_${endpointType}`;
+    
+    if (!requestCounts.has(key)) {
+        requestCounts.set(key, { count: 1, resetTime: now + RATE_LIMIT_WINDOW, type: endpointType });
     } else {
-        const clientData = requestCounts.get(clientIp);
+        const clientData = requestCounts.get(key);
         if (now > clientData.resetTime) {
             clientData.count = 1;
             clientData.resetTime = now + RATE_LIMIT_WINDOW;
@@ -166,14 +205,26 @@ app.use((req, res, next) => {
             clientData.count++;
         }
         
-        if (clientData.count > RATE_LIMIT_MAX) {
-            logApp(`🚫 Rate limit excedido para IP: ${clientIp}`, 'warn', 'SECURITY');
+        if (clientData.count > limit) {
+            logApp(`🚫 Rate limit excedido para IP: ${clientIp}, tipo: ${endpointType}, límite: ${limit}`, 'warn', 'SECURITY');
             return res.status(429).json({ 
                 error: 'Demasiadas peticiones, intenta más tarde',
-                retryAfter: Math.ceil((clientData.resetTime - now) / 1000)
+                type: endpointType,
+                limit: limit,
+                retryAfter: Math.ceil((clientData.resetTime - now) / 1000),
+                message: endpointType === 'general' ? 
+                    'Navegación muy intensa, por favor espera un momento' :
+                    endpointType === 'sensitive' ?
+                    'Demasiadas operaciones sensibles, espera antes de continuar' :
+                    'Límite de peticiones alcanzado'
             });
         }
     }
+    
+    // Headers informativos
+    res.setHeader('X-RateLimit-Type', endpointType);
+    res.setHeader('X-RateLimit-Limit', limit);
+    res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - (requestCounts.get(key)?.count || 0)));
     
     next();
 });
@@ -181,12 +232,18 @@ app.use((req, res, next) => {
 // Limpiar el mapa de rate limiting cada hora
 setInterval(() => {
     const now = Date.now();
-    for (const [ip, data] of requestCounts.entries()) {
+    let cleanedCount = 0;
+    
+    for (const [key, data] of requestCounts.entries()) {
         if (now > data.resetTime) {
-            requestCounts.delete(ip);
+            requestCounts.delete(key);
+            cleanedCount++;
         }
     }
-    logApp(`🧹 Cache de rate limiting limpiado. IPs activas: ${requestCounts.size}`, 'info', 'MAINTENANCE');
+    
+    if (cleanedCount > 0) {
+        logApp(`🧹 Cache de rate limiting limpiado. ${cleanedCount} entradas removidas. Activas: ${requestCounts.size}`, 'info', 'MAINTENANCE');
+    }
 }, 60 * 60 * 1000);
 
 // ==============================================
@@ -319,11 +376,11 @@ const startServer = async () => {
         // Inicializar base de datos
         await initializeDatabase();
         
-        // Iniciar servidor
+        // Solo servidor HTTP (puerto 4000)
         const server = app.listen(port, '0.0.0.0', () => {
-            logApp(`🌟 ¡Servidor iniciado exitosamente!`, 'success', 'STARTUP');
+            logApp(`🌟 ¡Servidor HTTP iniciado exitosamente!`, 'success', 'STARTUP');
             logApp(`🔗 URL local: http://localhost:${port}`, 'info', 'STARTUP');
-            logApp(`🔗 URL red: http://45.58.127.47:${port}`, 'info', 'STARTUP');
+            logApp(`🔗 URL red: http://vps-5234411-x.dattaweb.com:${port}`, 'info', 'STARTUP');
             logApp(`🌍 Entorno: ${process.env.NODE_ENV || 'development'}`, 'info', 'STARTUP');
             logApp(`🏪 Tienda: ${process.env.STORE_NAME || 'PuntoSur'}`, 'info', 'STARTUP');
             
@@ -335,9 +392,9 @@ const startServer = async () => {
         });
         
         // Configurar timeout del servidor
-        server.timeout = 30000; // 30 segundos
-        server.keepAliveTimeout = 65000; // 65 segundos
-        server.headersTimeout = 66000; // 66 segundos
+        server.timeout = 30000;
+        server.keepAliveTimeout = 65000;
+        server.headersTimeout = 66000;
         
         // Manejo de cierre limpio
         process.on('SIGINT', () => {

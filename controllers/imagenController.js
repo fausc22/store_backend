@@ -32,7 +32,7 @@ const asyncHandler = (fn) => (req, res, next) => {
 // ==============================================
 
 // Crear directorios si no existen
-const publicidadPath = path.join(__dirname, "../resources/publicidad");
+const publicidadPath = path.join(__dirname, "../resources/showcase");
 const productosPath = path.join(__dirname, "../resources/img_art");
 
 const crearDirectorios = async () => {
@@ -188,7 +188,7 @@ const subirImagenPublicidad = asyncHandler(async (req, res) => {
         
         try {
             const duration = Date.now() - startTime;
-            const rutaRelativa = `/publicidad/${req.file.filename}`;
+            const rutaRelativa = `/showcase/${req.file.filename}`;
             
             logImagen(`✅ Imagen de publicidad subida exitosamente (${duration}ms): ${req.file.filename}`, 'success', 'PUBLICIDAD');
             
@@ -236,7 +236,7 @@ const obtenerImagenesPublicidad = asyncHandler(async (req, res) => {
                     
                     return {
                         nombre: archivo,
-                        ruta: `/publicidad/${archivo}`,
+                        ruta: `/showcase/${archivo}`,
                         tamaño: stats.size,
                         fechaCreacion: stats.birthtime,
                         fechaModificacion: stats.mtime
@@ -245,7 +245,7 @@ const obtenerImagenesPublicidad = asyncHandler(async (req, res) => {
                     logImagen(`⚠️ Error obteniendo info de ${archivo}: ${error.message}`, 'warn', 'PUBLICIDAD');
                     return {
                         nombre: archivo,
-                        ruta: `/publicidad/${archivo}`,
+                        ruta: `/showcase/${archivo}`,
                         tamaño: 0,
                         fechaCreacion: null,
                         fechaModificacion: null

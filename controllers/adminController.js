@@ -31,6 +31,28 @@ const asyncHandler = (fn) => (req, res, next) => {
     Promise.resolve(fn(req, res, next)).catch(next);
 };
 
+
+const getParametersFromPath = (req) => {
+    // Para búsqueda simple
+    const searchTerm = req.params.searchTerm || '';
+    
+    // Para filtros complejos (si usas JSON encoded en el futuro)
+    let filtros = {};
+    if (req.params.filtrosEncoded) {
+        try {
+            filtros = JSON.parse(decodeURIComponent(req.params.filtrosEncoded));
+        } catch (error) {
+            console.warn('Error parseando filtros:', error);
+        }
+    }
+    
+    return {
+        searchTerm: searchTerm.trim(),
+        ...filtros
+    };
+};
+
+
 // ==============================================
 // AUTENTICACIÓN Y CONFIGURACIÓN
 // ==============================================
@@ -218,6 +240,41 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
         logAdmin(`❌ Error obteniendo pedidos pendientes: ${error.message}`, 'error', 'PEDIDOS');
         res.status(500).json({ 
             error: 'Error al obtener los pedidos pendientes',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const pedidosPendientesCheck = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    
+    try {
+        // Consulta optimizada solo para checkeo - campos mínimos
+        const query = `
+            SELECT 
+                id_pedido, 
+                fecha, 
+                cliente, 
+                cantidad_productos, 
+                monto_total,
+                telefono_cliente,
+                estado
+            FROM pedidos 
+            WHERE estado IN ('pendiente', 'confirmado') 
+            ORDER BY fecha DESC
+            LIMIT 50
+        `;
+
+        const results = await executeQuery(query, [], 'PEDIDOS_CHECK');
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ Check de pedidos completado (${duration}ms) - ${results.length} pedidos`);
+        
+        res.json(results);
+    } catch (error) {
+        console.error(`❌ Error en check de pedidos: ${error.message}`);
+        res.status(500).json({ 
+            error: 'Error al verificar pedidos',
             timestamp: new Date().toISOString()
         });
     }
@@ -445,7 +502,7 @@ const actualizarInfoProducto = asyncHandler(async (req, res) => {
 
 const actualizarProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
-    const { nombre_producto, cantidad, precio } = req.body;
+    const { nombre_producto, cantidad, precio, subtotal } = req.body;
 
     logAdmin(`Actualizando producto en pedido: ${productoId}`, 'info', 'PRODUCTOS');
 
@@ -457,8 +514,13 @@ const actualizarProducto = asyncHandler(async (req, res) => {
     }
 
     try {
-        const query = `UPDATE pedidos_contenido SET nombre_producto = ?, cantidad = ?, precio = ? WHERE id = ?`;
-        const result = await executeQuery(query, [nombre_producto, cantidad, precio, productoId], 'UPDATE_PRODUCTO_PEDIDO');
+        // CALCULAR SUBTOTAL en backend por seguridad
+        const precioNum = parseFloat(precio);
+        const cantidadNum = parseInt(cantidad);
+        const subtotalCalculado = precioNum * cantidadNum;
+
+        const query = `UPDATE pedidos_contenido SET nombre_producto = ?, cantidad = ?, precio = ?, subtotal = ? WHERE id = ?`;
+        const result = await executeQuery(query, [nombre_producto, cantidadNum, precioNum, subtotalCalculado, productoId], 'UPDATE_PRODUCTO_PEDIDO');
 
         if (result.affectedRows === 0) {
             return res.status(404).json({ 
@@ -467,7 +529,32 @@ const actualizarProducto = asyncHandler(async (req, res) => {
             });
         }
 
+        // OBTENER ID DEL PEDIDO para actualizar totales
+        const getPedidoQuery = `SELECT id_pedido FROM pedidos_contenido WHERE id = ?`;
+        const pedidoResult = await executeQuery(getPedidoQuery, [productoId], 'GET_PEDIDO_ID');
         
+        if (pedidoResult.length > 0) {
+            const idPedido = pedidoResult[0].id_pedido;
+            
+            // ACTUALIZAR TOTALES DEL PEDIDO
+            const updateQuery = `
+                UPDATE pedidos 
+                SET 
+                    monto_total = (
+                        SELECT COALESCE(SUM(subtotal), 0) 
+                        FROM pedidos_contenido 
+                        WHERE id_pedido = ?
+                    ),
+                    cantidad_productos = (
+                        SELECT COALESCE(SUM(cantidad), 0) 
+                        FROM pedidos_contenido 
+                        WHERE id_pedido = ?
+                    )
+                WHERE id_pedido = ?
+            `;
+
+            await executeQuery(updateQuery, [idPedido, idPedido, idPedido], 'UPDATE_TOTALES_AFTER_UPDATE');
+        }
 
         logAdmin(`✅ Producto en pedido ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
         res.json({ 
@@ -524,7 +611,7 @@ const actualizarPedido = asyncHandler(async (req, res) => {
 });
 
 const agregarProductoAlPedido = asyncHandler(async (req, res) => {
-    const { id_pedido, codigo_barra, nombre_producto, cantidad, precio } = req.body;
+    const { id_pedido, codigo_barra, nombre_producto, cantidad, precio, subtotal } = req.body;
 
     logAdmin(`Agregando producto al pedido: ${id_pedido}`, 'info', 'PEDIDOS');
 
@@ -536,27 +623,40 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Insertar producto
+        // CALCULAR SUBTOTAL en el backend por seguridad
+        const precioNum = parseFloat(precio);
+        const cantidadNum = parseInt(cantidad);
+        const subtotalCalculado = precioNum * cantidadNum;
+
+        // Insertar producto con subtotal calculado
         const insertQuery = `
-            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio) 
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio, subtotal) 
+            VALUES (?, ?, ?, ?, ?, ?)
         `;
         
-        await executeQuery(insertQuery, [id_pedido, codigo_barra, nombre_producto, cantidad, precio], 'INSERT_PRODUCTO_PEDIDO');
+        await executeQuery(insertQuery, [
+            id_pedido, 
+            codigo_barra, 
+            nombre_producto, 
+            cantidadNum, 
+            precioNum, 
+            subtotalCalculado // ← Usar subtotal calculado
+        ], 'INSERT_PRODUCTO_PEDIDO');
 
-        // Actualizar totales del pedido
+        // ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
         const updateQuery = `
             UPDATE pedidos 
-            SET monto_total = (
-                SELECT SUM(subtotal) 
-                FROM pedidos_contenido 
-                WHERE id_pedido = ?
-            ),
-            cantidad_productos = (
-                SELECT SUM(cantidad) 
-                FROM pedidos_contenido 
-                WHERE id_pedido = ?
-            )
+            SET 
+                monto_total = (
+                    SELECT COALESCE(SUM(subtotal), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                ),
+                cantidad_productos = (
+                    SELECT COALESCE(SUM(cantidad), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                )
             WHERE id_pedido = ?
         `;
 
@@ -1278,7 +1378,7 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
 
 // También actualizar la función de búsqueda existente
 const buscarProductoEnPedido = asyncHandler(async (req, res) => {
-    const searchTerm = req.query.search?.trim() || '';
+    const searchTerm = req.params.searchTerm?.trim() || '';
     const startTime = Date.now();
     
     logAdmin(`Buscando productos: "${searchTerm}"`, 'info', 'PRODUCTOS');
@@ -1723,6 +1823,8 @@ const actualizarStockProducto = asyncHandler(async (req, res) => {
 });
 
 const buscarProductosAvanzado = asyncHandler(async (req, res) => {
+    const filtrosDecoded = decodeURIComponent(req.params.filtrosEncoded);
+    const filtros = JSON.parse(filtrosDecoded);
     const { 
         termino, 
         categoria, 
@@ -1733,7 +1835,7 @@ const buscarProductosAvanzado = asyncHandler(async (req, res) => {
         precioMaximo,
         limite = 50,
         pagina = 1
-    } = req.query;
+    } = filtros;
     
     const startTime = Date.now();
     logAdmin(`Búsqueda avanzada de productos`, 'info', 'PRODUCTOS');
@@ -1974,5 +2076,6 @@ module.exports = {
     obtenerEstadisticasProductos,
     actualizarStockProducto,
     buscarProductosAvanzado,
-    obtenerCategoriasAdmin
+    obtenerCategoriasAdmin,
+    pedidosPendientesCheck
 };

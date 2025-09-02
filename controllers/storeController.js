@@ -204,26 +204,51 @@ const productosMain = asyncHandler(async (req, res) => {
         const precioColumn = getPrecioColumn();
         console.log('Usando columna de precio:', precioColumn);
 
-        const countQuery = `SELECT COUNT(*) as total FROM articulo WHERE HABILITADO = 'S'`;
-
-        const productosQuery = `
-            SELECT 
-                CODIGO_BARRA,
-                COD_INTERNO,
-                COD_IVA,
-                ${precioColumn} AS PRECIO,
-                COSTO,
-                porc_impint,
-                COD_DPTO,
-                PESABLE,
-                STOCK,
-                art_desc_vta,
-                HABILITADO
+        const countQuery = `
+            SELECT COUNT(*) as total 
             FROM articulo 
-            WHERE HABILITADO = 'S'
-            ORDER BY ${precioColumn} DESC 
-            LIMIT ${limit} OFFSET ${offset}
+            WHERE HABILITADO = 'S' 
+            AND (
+                CASE 
+                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 2 THEN precio_sin_iva_4 
+                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                END
+            ) > 0
         `;
+
+const productosQuery = `
+        SELECT 
+            CODIGO_BARRA,
+            COD_INTERNO,
+            COD_IVA,
+            CASE 
+                WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                WHEN COD_IVA = 2 THEN round(precio_sin_iva_4, 2) + round(costo * porc_impint / 100, 2)
+                ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+            END AS PRECIO,
+            COSTO,
+            porc_impint,
+            COD_DPTO,
+            PESABLE,
+            STOCK,
+            art_desc_vta,
+            HABILITADO
+        FROM articulo 
+        WHERE HABILITADO = 'S' 
+        AND (
+            CASE 
+                WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+            END
+        ) > 0
+        ORDER BY ${precioColumn} DESC 
+        LIMIT ${limit} OFFSET ${offset}
+    `;
 
         const [countResult, products] = await Promise.all([
             executeQuery(countQuery, [], 'COUNT_PRODUCTOS'),
@@ -265,7 +290,7 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
         });
     }
 
-    try {
+     try {
         const precioColumn = getPrecioColumn();
 
         const countQuery = `
@@ -273,6 +298,14 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
             FROM articulo ar 
             INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
             WHERE c.NOM_CLASIF = ? AND ar.HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN ar.precio_sin_iva_4
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END
+            ) > 0
         `;
 
         const productosQuery = `
@@ -280,7 +313,12 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
                 ar.CODIGO_BARRA,
                 ar.COD_INTERNO,
                 ar.COD_IVA,
-                ar.${precioColumn} AS PRECIO,
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN ar.precio_sin_iva_4
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END AS PRECIO,
                 ar.COSTO,
                 ar.porc_impint,
                 ar.COD_DPTO,
@@ -292,6 +330,14 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
             INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
             WHERE c.NOM_CLASIF = ? 
             AND ar.HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN round(ar.precio_sin_iva_4, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END
+            ) > 0
             ORDER BY ar.art_desc_vta ASC
             LIMIT ${limit} OFFSET ${offset}
         `;
@@ -352,6 +398,14 @@ const buscarProductos = asyncHandler(async (req, res) => {
             FROM articulo
             WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
             AND HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                END
+            ) > 0
         `;
 
         const productosQuery = `
@@ -359,7 +413,12 @@ const buscarProductos = asyncHandler(async (req, res) => {
                 CODIGO_BARRA,
                 COD_INTERNO,
                 COD_IVA,
-                ${precioColumn} AS PRECIO,
+                CASE 
+                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                END AS PRECIO,
                 COSTO,
                 porc_impint,
                 COD_DPTO,
@@ -369,6 +428,14 @@ const buscarProductos = asyncHandler(async (req, res) => {
             FROM articulo
             WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
             AND HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 2 THEN round(precio_sin_iva_4, 2) + round(costo * porc_impint / 100, 2)
+                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                END
+            ) > 0
             ORDER BY 
                 CASE 
                     WHEN art_desc_vta LIKE ? THEN 1
@@ -445,14 +512,18 @@ const articulosCheckout = asyncHandler(async (req, res) => {
     try {
         const precioColumn = getPrecioColumn();
         
-        // Si no hay items en el carrito, productos aleatorios
         if (cartCodes.length === 0) {
             const fallbackQuery = `
                 SELECT 
                     CODIGO_BARRA,
                     COD_INTERNO,
                     COD_IVA,
-                    ${precioColumn} AS PRECIO,
+                    CASE 
+                        WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                        ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    END AS PRECIO,
                     COSTO,
                     porc_impint,
                     COD_DPTO,
@@ -461,6 +532,14 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                     art_desc_vta
                 FROM articulo 
                 WHERE HABILITADO = 'S'
+                AND (
+                    CASE 
+                        WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                        ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    END
+                ) > 0
                 ORDER BY RAND()
                 LIMIT 6
             `;
@@ -473,16 +552,20 @@ const articulosCheckout = asyncHandler(async (req, res) => {
             return res.json(results);
         }
 
-        // Construir placeholders para la consulta
         const placeholders1 = cartCodes.map(() => '?').join(',');
         const placeholders2 = cartCodes.map(() => '?').join(',');
-        
+
         const smartQuery = `
             SELECT DISTINCT
                 a.CODIGO_BARRA,
                 a.COD_INTERNO,
                 a.COD_IVA,
-                a.${precioColumn} AS PRECIO,
+                CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                END AS PRECIO,
                 a.COSTO,
                 a.porc_impint,
                 a.COD_DPTO,
@@ -500,6 +583,14 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                 WHERE CODIGO_BARRA IN (${placeholders2}) 
                 AND HABILITADO = 'S'
             )
+            AND (
+                CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                END
+            ) > 0
             ORDER BY RAND()
             LIMIT 6
         `;
@@ -521,7 +612,12 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                     CODIGO_BARRA,
                     COD_INTERNO,
                     COD_IVA,
-                    ${getPrecioColumn()} AS PRECIO,
+                    CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    END AS PRECIO,
                     COSTO,
                     porc_impint,
                     COD_DPTO,
@@ -790,10 +886,10 @@ const calculateShippingCost = (distance) => {
 const client = new mercadopago.MercadoPagoConfig({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
 });
-
+const nombreTiendaMP = process.env.STORE_NAME || 'MercadoPago';
 const createPreference = asyncHandler(async (req, res) => {
     const { total } = req.body;
-    const nombreTienda = process.env.STORE_NAME || 'Mi Tienda';
+    
     
     logController(`Creando preferencia MercadoPago - Total: ${total}`, 'info', 'MERCADOPAGO');
     
@@ -808,12 +904,16 @@ const createPreference = asyncHandler(async (req, res) => {
         const body = {
             items: [
                 {
-                    title: `Compra de ${nombreTienda}`,
+                    title: `Compra de ${nombreTiendaMP}`,
                     quantity: 1,
                     unit_price: Number(total),
                     currency_id: "ARS"
                 }
             ],
+            payer: {
+                name: nombreTiendaMP 
+            },
+            statement_descriptor: nombreTiendaMP.substring(0, 22),
             back_urls: {
                 success: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=success",
                 failure: "https://vps-5234411-x.dattaweb.com/tienda/pago-rechazado?status=failure", 
@@ -900,20 +1000,19 @@ const nuevoPedido = asyncHandler(async (req, res) => {
 
         // --- INICIO DE LA MODIFICACIÓN PARA INSERTAR PRODUCTOS ---
         if (productos && productos.length > 0) {
-            // Genera una cadena de '(?, ?, ?, ?, ?)' por cada producto
-            const valuePlaceholders = productos.map(() => '(?, ?, ?, ?, ?)').join(', ');
+            // Cambiar a 6 valores por producto (agregando cod_interno)
+            const valuePlaceholders = productos.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
             
             const insertProductoQuery = `
-                INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio)
+                INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio)
                 VALUES ${valuePlaceholders}
             `;
 
-            // Aplanar el array de arrays de productos a un solo array de valores
-            // Esto es necesario para que executeQuery reciba todos los parámetros en una lista plana
             const flattenedProductosValues = productos.reduce((acc, producto) => {
                 acc.push(
                     pedidoId,
                     producto.codigo_barra,
+                    producto.cod_interno,  // ← NUEVO CAMPO
                     producto.nombre_producto,
                     producto.cantidad,
                     producto.precio
@@ -1700,207 +1799,6 @@ const reverseGeocode = asyncHandler(async (req, res) => {
     }
 });
 
-// ==============================================
-// GESTIÓN DE IMÁGENES DE PRODUCTOS OPTIMIZADA
-// ==============================================
-
-// Cache en memoria para imágenes
-const imageCache = new Map();
-const CACHE_DURATION = 1000 * 60 * 30; // 30 minutos
-
-const getProductImage = asyncHandler(async (req, res) => {
-    const { codigo_barra } = req.params;
-    
-    if (!codigo_barra) {
-        return res.status(400).json({ 
-            error: 'Código de barra requerido',
-            timestamp: new Date().toISOString()
-        });
-    }
-
-    logController(`Obteniendo imagen para producto: ${codigo_barra}`, 'info', 'PRODUCT_IMAGE');
-
-    // Verificar cache
-    const cacheKey = `image_${codigo_barra}`;
-    const cached = imageCache.get(cacheKey);
-    
-    if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
-        logController(`✅ Imagen desde cache: ${codigo_barra}`, 'success', 'PRODUCT_IMAGE');
-        return res.json({
-            success: true,
-            imageUrl: cached.url,
-            source: cached.source,
-            fromCache: true
-        });
-    }
-
-    try {
-        // 1. Verificar imagen externa
-        const externalUrl = `https://www.rsoftware.com.ar/imgart/${codigo_barra}.png`;
-        const externalExists = await checkImageExists(externalUrl);
-        
-        if (externalExists) {
-            imageCache.set(cacheKey, {
-                url: externalUrl,
-                source: 'external',
-                timestamp: Date.now()
-            });
-            
-            logController(`✅ Imagen externa encontrada: ${codigo_barra}`, 'success', 'PRODUCT_IMAGE');
-            return res.json({
-                success: true,
-                imageUrl: externalUrl,
-                source: 'external'
-            });
-        }
-
-        // 2. Verificar imagen interna
-        const internalImagePath = path.join(__dirname, '../resources/img_art', `${codigo_barra}.png`);
-        const internalImageJpgPath = path.join(__dirname, '../resources/img_art', `${codigo_barra}.jpg`);
-        
-        let internalUrl = null;
-        if (fs.existsSync(internalImagePath)) {
-            internalUrl = `/images/products/${codigo_barra}.png`;
-        } else if (fs.existsSync(internalImageJpgPath)) {
-            internalUrl = `/images/products/${codigo_barra}.jpg`;
-        }
-        
-        if (internalUrl) {
-            // 🆕 CORREGIDO: Construir URL basada en el request actual, no hardcodeada
-            const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
-            const host = req.get('host');
-            const fullInternalUrl = `${protocol}://${host}${internalUrl}`;
-            
-            imageCache.set(cacheKey, {
-                url: fullInternalUrl,
-                source: 'internal',
-                timestamp: Date.now()
-            });
-            
-            logController(`✅ Imagen interna encontrada: ${codigo_barra}`, 'success', 'PRODUCT_IMAGE');
-            return res.json({
-                success: true,
-                imageUrl: fullInternalUrl,
-                source: 'internal'
-            });
-        }
-
-        // 3. Imagen placeholder - 🆕 CORREGIDO
-        const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
-        const host = "vps-5234411-x.dattaweb.com/api";
-        const placeholderUrl = `${protocol}://${host}/images/placeholder.png`;
-        
-        imageCache.set(cacheKey, {
-            url: placeholderUrl,
-            source: 'placeholder',
-            timestamp: Date.now()
-        });
-        
-        logController(`⚠️ Usando placeholder para: ${codigo_barra}`, 'warn', 'PRODUCT_IMAGE');
-        return res.json({
-            success: true,
-            imageUrl: placeholderUrl,
-            source: 'placeholder'
-        });
-
-    } catch (error) {
-        logController(`❌ Error obteniendo imagen ${codigo_barra}: ${error.message}`, 'error', 'PRODUCT_IMAGE');
-        
-        // 🆕 CORREGIDO: Placeholder de fallback
-        const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
-        const host = req.get('host');
-        const placeholderUrl = `${protocol}://${host}/images/placeholder.png`;
-        
-        return res.json({
-            success: true,
-            imageUrl: placeholderUrl,
-            source: 'placeholder',
-            error: 'Error retrieving image'
-        });
-    }
-});
-
-
-
-// Función helper para verificar si una imagen externa existe
-const checkImageExists = async (url) => {
-    try {
-        const response = await axios.head(url, {
-            timeout: 5000,
-            validateStatus: function (status) {
-                return status === 200;
-            }
-        });
-        return response.status === 200;
-    } catch (error) {
-        return false;
-    }
-};
-
-const clearImageCache = (req, res) => {
-    const cacheSize = imageCache.size;
-    imageCache.clear();
-    
-    logController(`✅ Cache de imágenes limpiado - ${cacheSize} entradas eliminadas`, 'success', 'CACHE');
-    res.json({ 
-        success: true, 
-        message: 'Cache de imágenes limpiado',
-        entriesCleared: cacheSize,
-        timestamp: new Date().toISOString()
-    });
-};
-
-const getImageCacheStats = (req, res) => {
-    const stats = {
-        totalCached: imageCache.size,
-        cacheSize: imageCache.size
-    };
-
-    if (process.env.NODE_ENV === 'development') {
-        stats.cacheEntries = [];
-        imageCache.forEach((value, key) => {
-            stats.cacheEntries.push({
-                key,
-                source: value.source,
-                timestamp: new Date(value.timestamp).toISOString(),
-                age: Date.now() - value.timestamp
-            });
-        });
-    }
-
-    res.json(stats);
-};
-
-const serveInternalImage = (req, res) => {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, '../resources/img_art', filename);
-    
-    if (!fs.existsSync(imagePath)) {
-        logController(`❌ Imagen no encontrada: ${filename}`, 'warn', 'SERVE_IMAGE');
-        return res.status(404).json({ error: 'Imagen no encontrada' });
-    }
-
-    const ext = path.extname(filename).toLowerCase();
-    if (!['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) {
-        return res.status(400).json({ error: 'Formato de imagen no válido' });
-    }
-
-    const contentType = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp'
-    }[ext] || 'image/png';
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=31536000');
-
-    const imageStream = fs.createReadStream(imagePath);
-    imageStream.pipe(res);
-    
-    logController(`✅ Imagen servida: ${filename}`, 'success', 'SERVE_IMAGE');
-};
 
 // ==============================================
 // EXPORTAR TODOS LOS CONTROLADORES
@@ -1930,9 +1828,6 @@ module.exports = {
     obtenerOfertasDestacados,
     eliminarOfertaDestacado,
     searchAddresses,
-    getProductImage,
-    clearImageCache,
-    getImageCacheStats,
-    serveInternalImage,
+    
     reverseGeocode
 };
