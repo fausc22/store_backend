@@ -334,7 +334,7 @@ const productosPedido = asyncHandler(async (req, res) => {
 
     try {
         const query = `
-            SELECT id, codigo_barra, nombre_producto, cantidad, precio, subtotal
+            SELECT id, codigo_barra, cod_interno, nombre_producto, cantidad, precio, subtotal
             FROM pedidos_contenido
             WHERE id_pedido = ?
             ORDER BY id
