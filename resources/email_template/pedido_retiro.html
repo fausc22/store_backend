@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <title>Pedido En Camino</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <style type="text/css">
+        /* Reset y compatibilidad */
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
+        
+        /* Soporte para enlaces */
+        a[x-apple-data-detectors] {
+            color: inherit !important;
+            text-decoration: none !important;
+            font-size: inherit !important;
+            font-family: inherit !important;
+            font-weight: inherit !important;
+            line-height: inherit !important;
+        }
+        
+        /* Responsive */
+        @media screen and (max-width: 600px) {
+            .mobile-hide { display: none !important; }
+            .mobile-center { text-align: center !important; }
+            .mobile-padding { padding: 20px !important; }
+            .mobile-font-small { font-size: 14px !important; }
+        }
+        
+        /* Prevenir margin collapse */
+        div[style*="margin: 16px 0;"] { margin: 0 !important; }
+    </style>
+</head>
+<body style="margin: 0 !important; padding: 0 !important; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+
+<table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 10px;">
+    <tr>
+        <td align="center">
+            <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:600px; background: #ffffff; border-radius: 16px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); overflow: hidden;">
+                
+                <!-- Header -->
+                <tr>
+                    <td align="center" style="background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); padding: 30px;">
+                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                                <td align="center">
+                                    <img src="cid:logo" alt="Logo" width="60" height="60" style="display: block; border-radius: 50%; margin-bottom: 15px;" />
+                                    <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 18px; font-weight: 500; margin: 0; color: #ffffff;">{{storeName}}</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                
+                <!-- Confirmación con ícono de envío -->
+                <tr>
+                    <td align="center" style="padding: 40px 35px 30px; background: #ffffff;">
+                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                                <td align="center">
+                                    <!-- Ícono de camión usando tabla y CSS -->
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin: 0 auto 20px;">
+                                        <tr>
+                                            <td align="center" style="width: 80px; height: 80px; background: linear-gradient(135deg, #3b82f6, #2563eb); border-radius: 50%; text-align: center; vertical-align: middle;">
+                                                <span style="color: #ffffff; font-size: 32px; line-height: 80px;">🚚</span>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <h1 style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 28px; font-weight: 700; color: #1f2937; margin: 0 0 15px 0; line-height: 1.2;">¡Pedido Listo para Retirar!</h1>
+                                    <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 18px; color: #6b7280; line-height: 1.5; margin: 0 0 15px 0;">{{name}}, tu pedido ya está preparado y listo para ser retirado!</p>
+
+                                    <!-- Horario de entrega -->
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin: 0 auto 15px; background: #fef3c7; padding: 20px; border-radius: 12px; border-left: 4px solid #f59e0b;">
+                                        <tr>
+                                            <td align="center">
+                                                <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #92400e; margin: 0; font-weight: 600;">
+                                                    ¡Te esperamos!
+                                                </p>
+                                                
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    
+                                    
+                                    <!-- Badge de estado -->
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin: 0 auto;">
+                                        <tr>
+                                            <td style="background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 8px 16px; border-radius: 20px; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; font-weight: 600;">
+                                                Direccíon de Retiro: {{storeAddress}}
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                
+                <!-- Detalles del pedido -->
+                <tr>
+                    <td style="padding: 0 35px 35px;">
+                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                                <td align="center" style="padding-bottom: 20px;">
+                                    <h2 style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 22px; font-weight: 700; color: #1f2937; margin: 0;">Detalle de tu Pedido</h2>
+                                    <!-- Línea decorativa -->
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin: 8px auto 0;">
+                                        <tr>
+                                            <td style="width: 60px; height: 3px; background: linear-gradient(90deg, #2563eb, #1e40af); border-radius: 2px;"></td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <!-- Tabla de productos -->
+                                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                                        <tr style="background: linear-gradient(135deg, #f8fafc, #e2e8f0);">
+                                            <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; font-weight: 600; color: #1f2937; padding: 16px 12px; border-bottom: 2px solid #e5e7eb;">Artículo</td>
+                                            <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; font-weight: 600; color: #1f2937; padding: 16px 12px; border-bottom: 2px solid #e5e7eb;">Cantidad</td>
+                                            <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; font-weight: 600; color: #1f2937; padding: 16px 12px; border-bottom: 2px solid #e5e7eb;">Precio</td>
+                                        </tr>
+                                        {{items}}
+                                    </table>
+                                </td>
+                            </tr>
+                            
+                            <!-- Totales mejorados -->
+                            <tr>
+                                <td style="padding-top: 25px;">
+                                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f8fafc; padding: 25px; border-radius: 12px;">
+                                        <tr>
+                                            <td>
+                                                <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                                                    <tr>
+                                                        <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #6b7280; font-weight: 500; padding-bottom: 8px;">Subtotal:</td>
+                                                        <td align="right" style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #1f2937; font-weight: 600; padding-bottom: 8px;">$ {{subtotal}}</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #6b7280; font-weight: 500; padding-bottom: 15px;">Envío:</td>
+                                                        <td align="right" style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #1f2937; font-weight: 600; padding-bottom: 15px;">$ {{shippingCost}}</td>
+                                                    </tr>
+                                                    <tr style="border-top: 2px solid #e5e7eb;">
+                                                        <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 20px; color: #1f2937; font-weight: 700; padding-top: 15px;">Total:</td>
+                                                        <td align="right" style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 20px; color: #1f2937; font-weight: 700; padding-top: 15px;">$ {{total}}</td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                
+                <!-- Contacto -->
+                <tr>
+                    <td style="background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); padding: 35px; text-align: center;">
+                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                                <td align="center" style="padding-bottom: 20px;">
+                                    <h2 style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 22px; font-weight: 700; color: #1f2937; margin: 0;">¿Necesitas Ayuda?</h2>
+                                    <!-- Línea decorativa -->
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin: 8px auto 0;">
+                                        <tr>
+                                            <td style="width: 60px; height: 3px; background: linear-gradient(90deg, #2563eb, #1e40af); border-radius: 2px;"></td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td align="center">
+                                    <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 15px;">
+                                        <tr>
+                                            <td style="padding-right: 8px; vertical-align: middle;">
+                                                <!-- Ícono de email usando símbolos -->
+                                                <span style="font-size: 18px; color: #6b7280;">✉</span>
+                                            </td>
+                                            <td style="vertical-align: middle;">
+                                                <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #6b7280; margin: 0;">{{storeMail}}</p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <table border="0" cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td style="padding-right: 8px; vertical-align: middle;">
+                                                <!-- Ícono de teléfono usando símbolos -->
+                                                <span style="font-size: 18px; color: #6b7280;">📞</span>
+                                            </td>
+                                            <td style="vertical-align: middle;">
+                                                <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #6b7280; margin: 0;">{{storePhone}}</p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                
+                <!-- Footer -->
+                <tr>
+                    <td style="padding: 25px 35px; text-align: center; background: #ffffff; border-top: 1px solid #f3f4f6;">
+                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                                <td align="center">
+                                    <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; color: #6b7280; line-height: 1.5; margin: 0 0 15px 0;">¡Gracias {{name}} por confiar en nosotros! Esperamos que disfrutes tu compra.</p>
+                                    <p style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #9ca3af; margin: 0;">© {{storeName}} - Todos los derechos reservados</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>
+
+</body>
+</html>

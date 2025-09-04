@@ -51,31 +51,27 @@ router.delete('/eliminar-producto/:id', adminController.eliminarProducto);
 // RUTAS DE GESTIÓN DE PRODUCTOS
 // ==============================================
 
-// Búsqueda y modificación de productos
+// Búsqueda de productos (DEBE IR PRIMERO para que no confunda con :codigo)
 router.get('/productos/:searchTerm', adminController.buscarProductoEnPedido);
+router.get('/buscar-productos/:searchTerm', adminController.buscarProductoEnPedido);
 
-// MANTENER TAMBIÉN LA RUTA PARA "todos los productos":
-router.get('/productos-todos', adminController.obtenerTodosLosProductos);
+// CRUD de productos individuales (usando rutas más específicas)
+router.get('/producto/detalle/:codigo', adminController.obtenerProductoPorCodigo);
+router.post('/productos', adminController.crearProducto);
 router.put('/actualizarInfoProducto/:id', adminController.actualizarInfoProducto);
+router.delete('/producto/:codigo', adminController.eliminarProductoCompleto);
 
-
-//NUEVAS RUTAS PARA INTERFAZ PRODUCTOS 
-// Obtener todos los productos (sin búsqueda)
+// Obtener todos los productos
 router.get('/productos-todos', adminController.obtenerTodosLosProductos);
 
 // Búsqueda avanzada de productos con filtros
-router.get('/productos-busqueda', adminController.buscarProductosAvanzado);
-router.get('/buscar-productos/:filtrosEncoded', adminController.buscarProductosAvanzado);
-
-// CRUD de productos individuales
-router.post('/productos', adminController.crearProducto);
-router.get('/productos/:codigo', adminController.obtenerProductoPorCodigo);
-router.delete('/productos/:codigo', adminController.eliminarProductoCompleto);
+router.get('/productos-busqueda-avanzada/:filtrosEncoded', adminController.buscarProductosAvanzado);
 
 // Gestión de stock específica
-router.put('/productos/:codigo/stock', adminController.actualizarStockProducto);
-router.get('/categorias', adminController.obtenerCategoriasAdmin);
+router.put('/producto/:codigo/stock', adminController.actualizarStockProducto);
+
 // Utilidades de productos
+router.get('/categorias', adminController.obtenerCategoriasAdmin);
 router.get('/productos-categorias', adminController.obtenerCategoriasProductos);
 router.get('/productos-estadisticas', adminController.obtenerEstadisticasProductos);
 
@@ -107,6 +103,7 @@ router.delete('/eliminarArticuloDest/:CODIGO_BARRA', adminController.eliminarArt
 // Emails de notificación
 router.post('/mailPedidoConfirmado', adminController.MailPedidoProcesado);
 router.post('/mailPedidoEnCamino', adminController.MailPedidoEnCamino);
+router.post('/mailPedidoRetiro', adminController.MailPedidoRetiro);
 
 // ==============================================
 // RUTAS DE ESTADÍSTICAS Y REPORTES

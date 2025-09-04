@@ -1,5 +1,5 @@
 // controllers/adminController.js - VERSIÓN CORREGIDA PARA BD
-const { executeQuery, logConnection } = require('./db');
+const { executeQuery, logConnection, pool } = require('./dbPS');
 const axios = require('axios');
 const mercadopago = require('mercadopago');
 const path = require('path');
@@ -327,29 +327,58 @@ const productosPedido = asyncHandler(async (req, res) => {
     
     if (!pedidoId || isNaN(pedidoId)) {
         return res.status(400).json({ 
+            success: false,
             error: 'ID de pedido inválido',
             timestamp: new Date().toISOString()
         });
     }
 
     try {
+        // Query mejorada que incluye stock actual del producto
         const query = `
-            SELECT id, codigo_barra, cod_interno, nombre_producto, cantidad, precio, subtotal
-            FROM pedidos_contenido
-            WHERE id_pedido = ?
-            ORDER BY id
+            SELECT 
+                pc.id, 
+                pc.codigo_barra, 
+                pc.cod_interno, 
+                pc.nombre_producto, 
+                pc.cantidad, 
+                pc.precio, 
+                pc.subtotal,
+                COALESCE(a.STOCK, 0) as stock_actual,
+                p.estado as estado_pedido
+            FROM pedidos_contenido pc
+            JOIN pedidos p ON pc.id_pedido = p.id_pedido
+            LEFT JOIN articulo a ON pc.codigo_barra = a.CODIGO_BARRA
+            WHERE pc.id_pedido = ?
+            ORDER BY pc.id ASC
         `;
         
-        const results = await executeQuery(query, [pedidoId], 'PRODUCTOS_PEDIDO');
+        const results = await executeQuery(query, [pedidoId], 'PRODUCTOS_PEDIDO_MEJORADO');
         
         const duration = Date.now() - startTime;
-        logAdmin(`✅ ${results.length} productos del pedido ${pedidoId} obtenidos (${duration}ms)`, 'success', 'PEDIDOS');
         
-        res.json(results);
+        const response = {
+            success: true,
+            data: results,
+            meta: {
+                pedido_id: pedidoId,
+                total_productos: results.length,
+                estado_pedido: results.length > 0 ? results[0].estado_pedido : null,
+                total_cantidad: results.reduce((sum, p) => sum + (parseInt(p.cantidad) || 0), 0),
+                total_monto: results.reduce((sum, p) => sum + (parseFloat(p.subtotal) || 0), 0)
+            },
+            timestamp: new Date().toISOString()
+        };
+        
+        logAdmin(`✅ ${results.length} productos del pedido ${pedidoId} obtenidos (${duration}ms)`, 'success', 'PEDIDOS');
+        res.json(response);
+        
     } catch (error) {
         logAdmin(`❌ Error obteniendo productos del pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
         res.status(500).json({ 
+            success: false,
             error: 'Error al obtener productos del pedido',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
     }
@@ -357,43 +386,200 @@ const productosPedido = asyncHandler(async (req, res) => {
 
 const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
     const pedidoId = req.params.id;
-    const { estado } = req.body;
+    const { estado, notas } = req.body;
     
     logAdmin(`Actualizando estado del pedido ${pedidoId} a: ${estado}`, 'info', 'PEDIDOS');
     
     if (!pedidoId || !estado) {
         return res.status(400).json({ 
+            success: false,
             error: 'ID de pedido y estado son requeridos',
             timestamp: new Date().toISOString()
         });
     }
 
+    let connection;
     try {
-        const query = `UPDATE pedidos SET estado = ? WHERE id_pedido = ?`;
-        const result = await executeQuery(query, [estado, pedidoId], 'UPDATE_ESTADO_PEDIDO');
-        
-        if (result.affectedRows === 0) {
-            logAdmin(`❌ Pedido ${pedidoId} no encontrado`, 'warn', 'PEDIDOS');
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Verificar que el pedido existe y obtener datos completos
+        const [pedidoResult] = await connection.execute(`
+            SELECT * FROM pedidos WHERE id_pedido = ?
+        `, [pedidoId]);
+
+        if (pedidoResult.length === 0) {
+            await connection.rollback();
             return res.status(404).json({ 
+                success: false,
                 error: 'Pedido no encontrado',
                 timestamp: new Date().toISOString()
             });
         }
 
-        logAdmin(`✅ Estado del pedido ${pedidoId} actualizado a '${estado}'`, 'success', 'PEDIDOS');
-        res.json({ 
-            success: true, 
-            message: `Estado del pedido actualizado a '${estado}'`,
+        const pedidoActual = pedidoResult[0];
+        const estadoAnterior = pedidoActual.estado;
+
+        // 2. Validar transiciones de estado
+        const transicionesPermitidas = {
+            'pendiente': ['confirmado', 'Anulado'],
+            'confirmado': ['entregado', 'Anulado'],
+            'entregado': ['confirmado'],
+            'Anulado': ['pendiente']
+        };
+
+        const estadosPermitidos = transicionesPermitidas[estadoAnterior.toLowerCase()] || [];
+        
+        if (!estadosPermitidos.includes(estado) && estadoAnterior !== estado) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                success: false,
+                error: `Transición no permitida de '${estadoAnterior}' a '${estado}'`,
+                transiciones_permitidas: estadosPermitidos,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 3. Actualizar el estado del pedido
+        const updateQuery = notas ? 
+            `UPDATE pedidos SET estado = ?, notas_local = ?, fecha_actualizacion = NOW() WHERE id_pedido = ?` :
+            `UPDATE pedidos SET estado = ?, fecha_actualizacion = NOW() WHERE id_pedido = ?`;
+        
+        const updateParams = notas ? [estado, notas, pedidoId] : [estado, pedidoId];
+
+        const [updateResult] = await connection.execute(updateQuery, updateParams);
+
+        if (updateResult.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                success: false,
+                error: 'No se pudo actualizar el pedido',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 4. SI EL NUEVO ESTADO ES "entregado", INSERTAR EN TABLAS DE CARRITO
+        if (estado.toLowerCase() === 'entregado') {
+            logAdmin(`Insertando pedido ${pedidoId} en historial de carrito`, 'info', 'CARRITO');
+            
+            // 4.1. Insertar en tabla carrito
+            const [carritoInsert] = await connection.execute(`
+                INSERT INTO carrito (
+                    idcarrito, 
+                    status, 
+                    id_cliente, 
+                    cantidad, 
+                    Total, 
+                    fecha, 
+                    cli_nombre, 
+                    cli_direccion, 
+                    cli_tel, 
+                    cli_email, 
+                    medio_pago, 
+                    data_pago
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                pedidoActual.id_pedido,           // idcarrito (usamos el ID del pedido)
+                3,                                // status (3 para completado)
+                pedidoActual.email_cliente,       // id_cliente (usamos email como ID)
+                pedidoActual.cantidad_productos,  // cantidad
+                pedidoActual.monto_total,         // Total
+                pedidoActual.fecha,               // fecha
+                pedidoActual.cliente,             // cli_nombre
+                pedidoActual.direccion_cliente,   // cli_direccion
+                pedidoActual.telefono_cliente,    // cli_tel
+                pedidoActual.email_cliente,       // cli_email
+                pedidoActual.medio_pago,          // medio_pago
+                ''                                // data_pago (vacío por ahora)
+            ]);
+
+            if (carritoInsert.affectedRows === 0) {
+                await connection.rollback();
+                return res.status(500).json({ 
+                    success: false,
+                    error: 'Error al insertar en tabla carrito',
+                    timestamp: new Date().toISOString()
+                });
+            }
+
+            // 4.2. Obtener productos del pedido para insertar en carrito_cont
+            const [productosResult] = await connection.execute(`
+                SELECT * FROM pedidos_contenido WHERE id_pedido = ?
+            `, [pedidoId]);
+
+            // 4.3. Insertar cada producto en carrito_cont
+            for (const producto of productosResult) {
+                const [contInsert] = await connection.execute(`
+                    INSERT INTO carrito_cont (
+                        idcarrito, 
+                        cod_interno, 
+                        codigo_barra, 
+                        cantidad, 
+                        precio
+                    ) VALUES (?, ?, ?, ?, ?)
+                `, [
+                    pedidoActual.id_pedido,           // idcarrito (referencia al carrito padre)
+                    producto.cod_interno || 0,        // cod_interno (0 si es NULL)
+                    producto.codigo_barra,            // codigo_barra
+                    producto.cantidad,                // cantidad
+                    producto.precio                   // precio
+                ]);
+
+                if (contInsert.affectedRows === 0) {
+                    await connection.rollback();
+                    return res.status(500).json({ 
+                        success: false,
+                        error: `Error al insertar producto ${producto.nombre_producto} en carrito_cont`,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            }
+
+            logAdmin(`✅ Pedido ${pedidoId} insertado en carrito con ${productosResult.length} productos`, 'success', 'CARRITO');
+        }
+
+        // 5. Confirmar toda la transacción
+        await connection.commit();
+
+        const response = {
+            success: true,
+            message: estado.toLowerCase() === 'entregado' 
+                ? `Pedido marcado como entregado e insertado en historial de ventas`
+                : `Estado del pedido actualizado de '${estadoAnterior}' a '${estado}'`,
+            data: {
+                pedido_id: pedidoId,
+                cliente: pedidoActual.cliente,
+                estado_anterior: estadoAnterior,
+                estado_nuevo: estado,
+                notas: notas || null,
+                insertado_en_carrito: estado.toLowerCase() === 'entregado',
+                fecha_actualizacion: new Date().toISOString()
+            },
             timestamp: new Date().toISOString()
-        });
+        };
+
+        logAdmin(`✅ Estado del pedido ${pedidoId} actualizado de '${estadoAnterior}' a '${estado}'`, 'success', 'PEDIDOS');
+        res.json(response);
+
     } catch (error) {
+        if (connection) {
+            await connection.rollback();
+        }
         logAdmin(`❌ Error actualizando estado del pedido ${pedidoId}: ${error.message}`, 'error', 'PEDIDOS');
         res.status(500).json({ 
-            error: 'Error al actualizar el estado del pedido',
+            success: false,
+            error: 'Error interno al actualizar el estado del pedido',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
+
+
 
 const eliminarPedido = asyncHandler(async (req, res) => {
     const pedidoId = req.params.id;
@@ -502,72 +688,137 @@ const actualizarInfoProducto = asyncHandler(async (req, res) => {
 
 const actualizarProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
-    const { nombre_producto, cantidad, precio, subtotal } = req.body;
+    const { nombre_producto, cantidad, precio } = req.body;
 
     logAdmin(`Actualizando producto en pedido: ${productoId}`, 'info', 'PRODUCTOS');
 
     if (!productoId || !nombre_producto || !cantidad || !precio) {
         return res.status(400).json({ 
-            error: 'Todos los campos son requeridos',
+            success: false,
+            error: 'ID del producto, nombre, cantidad y precio son requeridos',
             timestamp: new Date().toISOString()
         });
     }
 
+    let connection;
     try {
-        // CALCULAR SUBTOTAL en backend por seguridad
-        const precioNum = parseFloat(precio);
-        const cantidadNum = parseInt(cantidad);
-        const subtotalCalculado = precioNum * cantidadNum;
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
 
-        const query = `UPDATE pedidos_contenido SET nombre_producto = ?, cantidad = ?, precio = ?, subtotal = ? WHERE id = ?`;
-        const result = await executeQuery(query, [nombre_producto, cantidadNum, precioNum, subtotalCalculado, productoId], 'UPDATE_PRODUCTO_PEDIDO');
+        // 1. Verificar que el producto existe y obtener info del pedido
+        const [productoResult] = await connection.execute(`
+            SELECT pc.*, p.estado, p.id_pedido 
+            FROM pedidos_contenido pc 
+            JOIN pedidos p ON pc.id_pedido = p.id_pedido 
+            WHERE pc.id = ?
+        `, [productoId]);
 
-        if (result.affectedRows === 0) {
+        if (productoResult.length === 0) {
+            await connection.rollback();
             return res.status(404).json({ 
+                success: false,
                 error: 'Producto no encontrado',
                 timestamp: new Date().toISOString()
             });
         }
 
-        // OBTENER ID DEL PEDIDO para actualizar totales
-        const getPedidoQuery = `SELECT id_pedido FROM pedidos_contenido WHERE id = ?`;
-        const pedidoResult = await executeQuery(getPedidoQuery, [productoId], 'GET_PEDIDO_ID');
-        
-        if (pedidoResult.length > 0) {
-            const idPedido = pedidoResult[0].id_pedido;
-            
-            // ACTUALIZAR TOTALES DEL PEDIDO
-            const updateQuery = `
-                UPDATE pedidos 
-                SET 
-                    monto_total = (
-                        SELECT COALESCE(SUM(subtotal), 0) 
-                        FROM pedidos_contenido 
-                        WHERE id_pedido = ?
-                    ),
-                    cantidad_productos = (
-                        SELECT COALESCE(SUM(cantidad), 0) 
-                        FROM pedidos_contenido 
-                        WHERE id_pedido = ?
-                    )
-                WHERE id_pedido = ?
-            `;
+        const producto = productoResult[0];
+        const id_pedido = producto.id_pedido;
 
-            await executeQuery(updateQuery, [idPedido, idPedido, idPedido], 'UPDATE_TOTALES_AFTER_UPDATE');
+        // 2. Verificar que el pedido puede ser modificado
+        const estadoPedido = producto.estado.toLowerCase();
+        const estadosModificables = ['pendiente', 'confirmado'];
+        
+        if (!estadosModificables.includes(estadoPedido)) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                success: false,
+                error: `No se puede modificar un pedido con estado: ${estadoPedido}`,
+                timestamp: new Date().toISOString()
+            });
         }
 
-        logAdmin(`✅ Producto en pedido ${productoId} actualizado exitosamente`, 'success', 'PRODUCTOS');
-        res.json({ 
-            success: true, 
-            message: 'Producto actualizado correctamente',
+        // 3. CALCULAR SUBTOTAL en backend por seguridad
+        const precioNum = parseFloat(precio);
+        const cantidadNum = parseInt(cantidad);
+        const subtotalCalculado = precioNum * cantidadNum;
+
+        // 4. Actualizar producto
+        const [updateResult] = await connection.execute(`
+            UPDATE pedidos_contenido 
+            SET nombre_producto = ?, cantidad = ?, precio = ? 
+            WHERE id = ?
+        `, [nombre_producto, cantidadNum, precioNum, productoId]);
+
+        if (updateResult.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                success: false,
+                error: 'No se pudo actualizar el producto',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 5. ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
+        await connection.execute(`
+            UPDATE pedidos 
+            SET 
+                monto_total = (
+                    SELECT COALESCE(SUM(subtotal), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                ),
+                cantidad_productos = (
+                    SELECT COALESCE(SUM(cantidad), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                ),
+                fecha_actualizacion = NOW()
+            WHERE id_pedido = ?
+        `, [id_pedido, id_pedido, id_pedido]);
+
+        // 6. Obtener los totales actualizados
+        const [totalResult] = await connection.execute(
+            `SELECT monto_total, cantidad_productos FROM pedidos WHERE id_pedido = ?`,
+            [id_pedido]
+        );
+
+        // 7. Confirmar transacción
+        await connection.commit();
+
+        const response = {
+            success: true,
+            message: 'Producto actualizado y totales recalculados correctamente',
+            data: {
+                producto_id: productoId,
+                pedido_id: id_pedido,
+                subtotal_calculado: subtotalCalculado,
+                totales_actualizados: {
+                    monto_total: totalResult[0].monto_total,
+                    cantidad_productos: totalResult[0].cantidad_productos
+                }
+            },
             timestamp: new Date().toISOString()
-        });
+        };
+
+        logAdmin(`✅ Producto ${productoId} actualizado y totales recalculados`, 'success', 'PRODUCTOS');
+        res.json(response);
+
     } catch (error) {
-        logAdmin(`❌ Error actualizando producto en pedido ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
+        if (connection) {
+            await connection.rollback();
+        }
+        logAdmin(`❌ Error actualizando producto ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
         res.status(500).json({ 
-            error: 'Error al actualizar el producto',
+            success: false,
+            error: 'Error interno al actualizar el producto',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
 
@@ -617,34 +868,90 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
 
     if (!id_pedido || !codigo_barra || !nombre_producto || !cantidad || !precio) {
         return res.status(400).json({ 
+            success: false,
             error: 'Todos los campos son requeridos',
             timestamp: new Date().toISOString()
         });
     }
 
+    let connection;
     try {
-        // CALCULAR SUBTOTAL en el backend por seguridad
+        // Iniciar transacción para consistencia
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Verificar que el pedido existe y obtener su estado
+        const [pedidoResult] = await connection.execute(
+            `SELECT id_pedido, estado FROM pedidos WHERE id_pedido = ?`,
+            [id_pedido]
+        );
+
+        if (pedidoResult.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                success: false,
+                error: 'Pedido no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 2. Verificar que el pedido puede ser modificado
+        const estadoPedido = pedidoResult[0].estado.toLowerCase();
+        const estadosModificables = ['pendiente', 'confirmado'];
+        
+        if (!estadosModificables.includes(estadoPedido)) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                success: false,
+                error: `No se puede modificar un pedido con estado: ${estadoPedido}`,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 3. Verificar que el producto no esté ya en el pedido (evitar duplicados)
+        const [duplicateCheck] = await connection.execute(
+            `SELECT COUNT(*) as count FROM pedidos_contenido WHERE id_pedido = ? AND codigo_barra = ?`,
+            [id_pedido, codigo_barra]
+        );
+
+        if (duplicateCheck[0].count > 0) {
+            await connection.rollback();
+            return res.status(409).json({ 
+                success: false,
+                error: 'Este producto ya está en el pedido. Use la función editar para modificar la cantidad.',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 4. Obtener cod_interno del producto desde la tabla articulo
+        const [articuloResult] = await connection.execute(
+            `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ?`,
+            [codigo_barra]
+        );
+
+        const cod_interno = articuloResult.length > 0 ? articuloResult[0].COD_INTERNO : null;
+
+        // 5. CALCULAR SUBTOTAL en el backend por seguridad
         const precioNum = parseFloat(precio);
         const cantidadNum = parseInt(cantidad);
         const subtotalCalculado = precioNum * cantidadNum;
 
-        // Insertar producto con subtotal calculado
-        const insertQuery = `
-            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, nombre_producto, cantidad, precio, subtotal) 
+        // 6. Insertar producto con cod_interno
+        const [insertResult] = await connection.execute(`
+            INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio) 
             VALUES (?, ?, ?, ?, ?, ?)
-        `;
-        
-        await executeQuery(insertQuery, [
+        `, [
             id_pedido, 
             codigo_barra, 
+            cod_interno,
             nombre_producto, 
             cantidadNum, 
-            precioNum, 
-            subtotalCalculado // ← Usar subtotal calculado
-        ], 'INSERT_PRODUCTO_PEDIDO');
+            precioNum
+            // NO enviar subtotalCalculado - la BD lo calculará automáticamente
+        ]);
 
-        // ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
-        const updateQuery = `
+        // 7. ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
+        const [updateResult] = await connection.execute(`
             UPDATE pedidos 
             SET 
                 monto_total = (
@@ -656,24 +963,54 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
                     SELECT COALESCE(SUM(cantidad), 0) 
                     FROM pedidos_contenido 
                     WHERE id_pedido = ?
-                )
+                ),
+                fecha_actualizacion = NOW()
             WHERE id_pedido = ?
-        `;
+        `, [id_pedido, id_pedido, id_pedido]);
 
-        await executeQuery(updateQuery, [id_pedido, id_pedido, id_pedido], 'UPDATE_TOTALES_PEDIDO');
+        // 8. Obtener los totales actualizados para respuesta
+        const [totalResult] = await connection.execute(
+            `SELECT monto_total, cantidad_productos FROM pedidos WHERE id_pedido = ?`,
+            [id_pedido]
+        );
+
+        // 9. Confirmar transacción
+        await connection.commit();
+
+        const response = {
+            success: true,
+            message: 'Producto agregado y totales actualizados correctamente',
+            data: {
+                producto_id: insertResult.insertId,
+                pedido_id: id_pedido,
+                cod_interno: cod_interno,
+                subtotal_calculado: subtotalCalculado,
+                totales_actualizados: {
+                    monto_total: totalResult[0].monto_total,
+                    cantidad_productos: totalResult[0].cantidad_productos
+                }
+            },
+            timestamp: new Date().toISOString()
+        };
 
         logAdmin(`✅ Producto agregado al pedido ${id_pedido} y totales actualizados`, 'success', 'PEDIDOS');
-        res.json({ 
-            success: true, 
-            message: 'Producto agregado y pedido actualizado correctamente',
-            timestamp: new Date().toISOString()
-        });
+        res.json(response);
+
     } catch (error) {
+        if (connection) {
+            await connection.rollback();
+        }
         logAdmin(`❌ Error agregando producto al pedido ${id_pedido}: ${error.message}`, 'error', 'PEDIDOS');
         res.status(500).json({ 
-            error: 'Error al agregar el producto',
+            success: false,
+            error: 'Error interno al agregar el producto',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
 
@@ -684,36 +1021,132 @@ const eliminarProducto = asyncHandler(async (req, res) => {
 
     if (!productoId || isNaN(productoId)) {
         return res.status(400).json({ 
+            success: false,
             error: 'ID de producto inválido',
             timestamp: new Date().toISOString()
         });
     }
 
+    let connection;
     try {
-        const query = `DELETE FROM pedidos_contenido WHERE id = ?`;
-        const result = await executeQuery(query, [productoId], 'DELETE_PRODUCTO');
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
 
-        if (result.affectedRows === 0) {
+        // 1. Obtener información del producto y pedido ANTES de eliminarlo
+        const [productoResult] = await connection.execute(`
+            SELECT pc.*, p.estado, p.id_pedido 
+            FROM pedidos_contenido pc 
+            JOIN pedidos p ON pc.id_pedido = p.id_pedido 
+            WHERE pc.id = ?
+        `, [productoId]);
+
+        if (productoResult.length === 0) {
+            await connection.rollback();
             return res.status(404).json({ 
+                success: false,
                 error: 'Producto no encontrado',
                 timestamp: new Date().toISOString()
             });
         }
 
-        logAdmin(`✅ Producto ${productoId} eliminado exitosamente`, 'success', 'PRODUCTOS');
-        res.json({ 
-            success: true, 
-            message: 'Producto eliminado correctamente',
+        const producto = productoResult[0];
+        const id_pedido = producto.id_pedido;
+
+        // 2. Verificar que el pedido puede ser modificado
+        const estadoPedido = producto.estado.toLowerCase();
+        const estadosModificables = ['pendiente', 'confirmado'];
+        
+        if (!estadosModificables.includes(estadoPedido)) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                success: false,
+                error: `No se puede modificar un pedido con estado: ${estadoPedido}`,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 3. Eliminar el producto
+        const [deleteResult] = await connection.execute(
+            `DELETE FROM pedidos_contenido WHERE id = ?`,
+            [productoId]
+        );
+
+        if (deleteResult.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                success: false,
+                error: 'No se pudo eliminar el producto',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // 4. ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
+        await connection.execute(`
+            UPDATE pedidos 
+            SET 
+                monto_total = (
+                    SELECT COALESCE(SUM(subtotal), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                ),
+                cantidad_productos = (
+                    SELECT COALESCE(SUM(cantidad), 0) 
+                    FROM pedidos_contenido 
+                    WHERE id_pedido = ?
+                ),
+                fecha_actualizacion = NOW()
+            WHERE id_pedido = ?
+        `, [id_pedido, id_pedido, id_pedido]);
+
+        // 5. Obtener los totales actualizados
+        const [totalResult] = await connection.execute(
+            `SELECT monto_total, cantidad_productos FROM pedidos WHERE id_pedido = ?`,
+            [id_pedido]
+        );
+
+        // 6. Confirmar transacción
+        await connection.commit();
+
+        const response = {
+            success: true,
+            message: 'Producto eliminado y totales actualizados correctamente',
+            data: {
+                producto_eliminado: {
+                    id: productoId,
+                    nombre: producto.nombre_producto,
+                    cantidad: producto.cantidad,
+                    subtotal_eliminado: producto.subtotal
+                },
+                pedido_id: id_pedido,
+                totales_actualizados: {
+                    monto_total: totalResult[0].monto_total,
+                    cantidad_productos: totalResult[0].cantidad_productos
+                }
+            },
             timestamp: new Date().toISOString()
-        });
+        };
+
+        logAdmin(`✅ Producto ${productoId} eliminado y totales actualizados`, 'success', 'PRODUCTOS');
+        res.json(response);
+
     } catch (error) {
+        if (connection) {
+            await connection.rollback();
+        }
         logAdmin(`❌ Error eliminando producto ${productoId}: ${error.message}`, 'error', 'PRODUCTOS');
         res.status(500).json({ 
-            error: 'Error al eliminar el producto',
+            success: false,
+            error: 'Error interno al eliminar el producto',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
+
 
 // ==============================================
 // GESTIÓN DE OFERTAS Y DESTACADOS - CORREGIDA
@@ -1088,6 +1521,7 @@ const MailPedidoProcesado = asyncHandler(async (req, res) => {
 });
 
 // FUNCIÓN PEDIDO EN CAMINO
+
 const MailPedidoEnCamino = asyncHandler(async (req, res) => {
     const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
     
@@ -1158,6 +1592,83 @@ const MailPedidoEnCamino = asyncHandler(async (req, res) => {
         logAdmin(`❌ Error enviando email de pedido en camino a ${clientMail}: ${error.message}`, 'error', 'EMAIL');
         res.status(500).json({ 
             error: 'Error al enviar email de pedido en camino',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+
+const MailPedidoRetiro = asyncHandler(async (req, res) => {
+    const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone, desde, hasta } = req.body;
+    
+    logAdmin(`Enviando email de pedido listo para retirar a: ${clientMail}`, 'info', 'EMAIL');
+
+    if (!clientMail || !name || !items || !Array.isArray(items)) {
+        return res.status(400).json({ 
+            error: 'Datos incompletos para envío de email de retiro',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const templatePath = path.join(__dirname, '../resources/email_template/pedido_retiro.html');
+        let htmlTemplate = await fs.readFile(templatePath, 'utf8');
+
+        // ITEMS CON ESTILOS MEJORADOS
+        let itemsHtml = '';
+        items.forEach(item => {
+            itemsHtml += `<tr>
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
+                    ${item.name || item.nombre_producto}
+                </td>
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
+                    ${item.quantity || item.cantidad}
+                </td>
+                <td style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 15px; color: #6b7280; padding: 16px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
+                    ${item.price || item.precio}
+                </td>
+            </tr>`;
+        });
+
+        htmlTemplate = htmlTemplate.replace(/{{storeName}}/g, storeName || 'PuntoSur')
+                                    .replace(/{{storeAddress}}/g, process.env.STORE_ADDRESS || 'Dirección no disponible')
+                                   .replace(/{{name}}/g, name)
+                                   .replace(/{{items}}/g, itemsHtml)
+                                   .replace(/{{subtotal}}/g, subtotal || 0)
+                                   .replace(/{{shippingCost}}/g, shippingCost || 0)
+                                   .replace(/{{total}}/g, total || 0)
+                                   .replace(/{{storeMail}}/g, storeMail || process.env.STORE_EMAIL)
+                                   .replace(/{{storePhone}}/g, storePhone || process.env.STORE_PHONE)
+                                   .replace(/{{horarioInicio}}/g, desde || '9:00')
+                                   .replace(/{{horarioFin}}/g, hasta || '18:00');
+
+        const transporter = getEmailTransporter();
+        const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
+
+        await transporter.sendMail({
+            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            to: clientMail,
+            subject: 'Tu pedido está listo para retirar!',
+            html: htmlTemplate,
+            attachments: [
+                {
+                    filename: 'logo.jpg',
+                    path: logoPath,
+                    cid: 'logo'
+                }
+            ]
+        });
+
+        logAdmin(`✅ Email de pedido listo para retirar enviado a: ${clientMail}`, 'success', 'EMAIL');
+        res.json({ 
+            success: true, 
+            message: 'Email de retiro enviado correctamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error enviando email de pedido listo para retirar a ${clientMail}: ${error.message}`, 'error', 'EMAIL');
+        res.status(500).json({ 
+            error: 'Error al enviar email de pedido listo para retirar',
             timestamp: new Date().toISOString()
         });
     }
@@ -2063,7 +2574,7 @@ module.exports = {
     // Sistema de emails
     MailPedidoProcesado,
     MailPedidoEnCamino,
-    
+    MailPedidoRetiro,
     // Estadísticas
     obtenerStats,
 
