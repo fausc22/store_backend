@@ -132,7 +132,9 @@ const obtenerConfig = asyncHandler(async (req, res) => {
             iva: config.IVA,
             pageStatus: config.PAGE_STATUS,
             userName: config.USER_NAME,
-            passWord: config.PASSWORD
+            passWord: config.PASSWORD,
+            horaInicio: config.HORA_INICIO,
+            horaFin: config.HORA_FIN
         };
 
         logAdmin('✅ Configuración obtenida exitosamente', 'success', 'CONFIG');
@@ -163,7 +165,7 @@ const saveConfig = asyncHandler(async (req, res) => {
         const existingContent = await fs.readFile(envPath, 'utf8');
         const existingConfig = dotenv.parse(existingContent);
 
-        // Actualizar solo las variables que están en el request
+        // Actualizar configuración
         const updatedConfig = {
             ...existingConfig,
             ...(config.storeName && { STORE_NAME: config.storeName }),
@@ -178,7 +180,9 @@ const saveConfig = asyncHandler(async (req, res) => {
             ...(config.iva && { IVA: config.iva }),
             ...(config.pageStatus && { PAGE_STATUS: config.pageStatus }),
             ...(config.userName && { USER_NAME: config.userName }),
-            ...(config.passWord && { PASSWORD: config.passWord })
+            ...(config.passWord && { PASSWORD: config.passWord }),
+            ...(config.horaInicio && { HORA_INICIO: config.horaInicio }),
+            ...(config.horaFin && { HORA_FIN: config.horaFin })
         };
 
         // Crear el contenido del archivo .env
@@ -188,7 +192,22 @@ const saveConfig = asyncHandler(async (req, res) => {
 
         await fs.writeFile(envPath, updatedContent, 'utf8');
         
-        logAdmin('✅ Configuración guardada exitosamente', 'success', 'CONFIG');
+        // 🆕 AGREGAR ESTO: Actualizar process.env inmediatamente
+        if (config.horaInicio) {
+            process.env.HORA_INICIO = config.horaInicio;
+        }
+        if (config.horaFin) {
+            process.env.HORA_FIN = config.horaFin;
+        }
+        if (config.iva) {
+            process.env.IVA = config.iva;
+        }
+        if (config.pageStatus) {
+            process.env.PAGE_STATUS = config.pageStatus;
+        }
+        // Agregar otras variables críticas que necesites actualizar inmediatamente
+        
+        logAdmin('✅ Configuración guardada y variables actualizadas en memoria', 'success', 'CONFIG');
         res.json({ 
             message: 'Configuración guardada exitosamente',
             timestamp: new Date().toISOString()
@@ -1158,10 +1177,17 @@ const articulosOferta = asyncHandler(async (req, res) => {
     
     try {
         const query = `
-            SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
-            FROM articulo_temp 
-            WHERE cat = '1' AND activo = 1
-            ORDER BY orden, fecha_inicio DESC
+            SELECT 
+                at.CODIGO_BARRA, 
+                at.COD_INTERNO,
+                at.art_desc_vta AS nombre, 
+                at.PRECIO, 
+                at.PRECIO_DESC,
+                COALESCE(a.STOCK, 0) AS STOCK
+            FROM articulo_temp at
+            LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+            WHERE at.cat = '1' AND at.activo = 1
+            ORDER BY at.orden, at.fecha_inicio DESC
         `;
         
         const results = await executeQuery(query, [], 'ARTICULOS_OFERTA');
@@ -1185,10 +1211,17 @@ const articulosDest = asyncHandler(async (req, res) => {
     
     try {
         const query = `
-            SELECT CODIGO_BARRA, art_desc_vta AS nombre, PRECIO, PRECIO_DESC 
-            FROM articulo_temp 
-            WHERE cat = '2' AND activo = 1
-            ORDER BY orden, fecha_inicio DESC
+            SELECT 
+                at.CODIGO_BARRA, 
+                at.COD_INTERNO,
+                at.art_desc_vta AS nombre, 
+                at.PRECIO, 
+                at.PRECIO_DESC,
+                COALESCE(a.STOCK, 0) AS STOCK
+            FROM articulo_temp at
+            LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+            WHERE at.cat = '2' AND at.activo = 1
+            ORDER BY at.orden, at.fecha_inicio DESC
         `;
         
         const results = await executeQuery(query, [], 'ARTICULOS_DESTACADOS');
@@ -1219,33 +1252,37 @@ const agregarArticuloOferta = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Verificar si el artículo existe en la tabla principal
-        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        // ✅ CORRECCIÓN: Query sin COUNT
+        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
         const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
         
-        if (checkResult[0].count === 0) {
+        if (!checkResult || checkResult.length === 0) {
             return res.status(404).json({ 
                 error: 'El artículo no existe en el inventario principal',
                 timestamp: new Date().toISOString()
             });
         }
 
+        const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+
         const query = `
-            INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
-            VALUES (?, ?, ?, ?, '1', 1)
+            INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
+            VALUES (?, ?, ?, ?, ?, '1', 1)
             ON DUPLICATE KEY UPDATE 
+                COD_INTERNO = VALUES(COD_INTERNO),
                 PRECIO = VALUES(PRECIO), 
                 PRECIO_DESC = VALUES(PRECIO_DESC),
                 activo = 1,
                 cat = '1'
         `;
 
-        await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_OFERTA');
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_OFERTA');
 
-        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a ofertas exitosamente`, 'success', 'OFERTAS');
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a ofertas con COD_INTERNO: ${COD_INTERNO}`, 'success', 'OFERTAS');
         res.json({ 
             success: true, 
             message: 'Artículo agregado a oferta',
+            cod_interno: COD_INTERNO,
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -1270,33 +1307,37 @@ const agregarArticuloDest = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Verificar si el artículo existe en la tabla principal
-        const checkQuery = `SELECT COUNT(*) as count FROM articulo WHERE CODIGO_BARRA = ?`;
+        // ✅ CORRECCIÓN: Query sin COUNT
+        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
         const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
         
-        if (checkResult[0].count === 0) {
+        if (!checkResult || checkResult.length === 0) {
             return res.status(404).json({ 
                 error: 'El artículo no existe en el inventario principal',
                 timestamp: new Date().toISOString()
             });
         }
 
+        const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+
         const query = `
-            INSERT INTO articulo_temp (CODIGO_BARRA, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
-            VALUES (?, ?, ?, ?, '2', 1)
+            INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
+            VALUES (?, ?, ?, ?, ?, '2', 1)
             ON DUPLICATE KEY UPDATE 
+                COD_INTERNO = VALUES(COD_INTERNO),
                 PRECIO = VALUES(PRECIO), 
                 PRECIO_DESC = VALUES(PRECIO_DESC),
                 activo = 1,
                 cat = '2'
         `;
 
-        await executeQuery(query, [CODIGO_BARRA, nombre, PRECIO, PRECIO], 'INSERT_DESTACADO');
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_DESTACADO');
 
-        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a destacados exitosamente`, 'success', 'DESTACADOS');
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a destacados con COD_INTERNO: ${COD_INTERNO}`, 'success', 'DESTACADOS');
         res.json({ 
             success: true, 
             message: 'Artículo agregado a destacados',
+            cod_interno: COD_INTERNO,
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -1436,8 +1477,8 @@ const getEmailTransporter = () => {
             port: 587,
             secure: false,
             auth: {
-                user: 'faausc@gmail.com',
-                pass: 'qkbjcnmfgxoljgln'
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
             },
             tls: {
                 rejectUnauthorized: false,
@@ -2533,6 +2574,173 @@ const obtenerCategoriasAdmin = asyncHandler(async (req, res) => {
     }
 });
 
+const articulosLiquidacion = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Obteniendo artículos en liquidación', 'info', 'LIQUIDACION');
+    
+    try {
+        const query = `
+            SELECT 
+                at.CODIGO_BARRA, 
+                at.COD_INTERNO,
+                at.art_desc_vta AS nombre, 
+                at.PRECIO, 
+                at.PRECIO_DESC,
+                COALESCE(a.STOCK, 0) AS STOCK
+            FROM articulo_temp at
+            LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+            WHERE at.cat = '3' AND at.activo = 1
+            ORDER BY at.orden, at.fecha_inicio DESC
+        `;
+        
+        const results = await executeQuery(query, [], 'ARTICULOS_LIQUIDACION');
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ ${results.length} artículos en liquidación obtenidos (${duration}ms)`, 'success', 'LIQUIDACION');
+        
+        res.json(results);
+    } catch (error) {
+        logAdmin(`❌ Error obteniendo artículos en liquidación: ${error.message}`, 'error', 'LIQUIDACION');
+        res.status(500).json({ 
+            error: 'Error al obtener artículos en liquidación',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Resto de funciones de liquidación (actualizar precio, eliminar)
+const actualizarPrecioLiquidacion = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA, PRECIO_DESC } = req.body;
+
+    logAdmin(`Actualizando precio de liquidación: ${CODIGO_BARRA}`, 'info', 'LIQUIDACION');
+
+    if (!CODIGO_BARRA || !PRECIO_DESC) {
+        return res.status(400).json({ 
+            error: 'Código de barra y precio de descuento son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE articulo_temp SET PRECIO_DESC = ? WHERE CODIGO_BARRA = ? AND cat = '3'`;
+        const result = await executeQuery(query, [PRECIO_DESC, CODIGO_BARRA], 'UPDATE_PRECIO_LIQUIDACION');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Artículo en liquidación no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Precio de liquidación actualizado para ${CODIGO_BARRA}`, 'success', 'LIQUIDACION');
+        res.json({ 
+            success: true, 
+            message: 'Precio de liquidación actualizado',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando precio de liquidación ${CODIGO_BARRA}: ${error.message}`, 'error', 'LIQUIDACION');
+        res.status(500).json({ 
+            error: 'Error al actualizar precio de liquidación',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const eliminarArticuloLiquidacion = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA } = req.params;
+
+    logAdmin(`Eliminando artículo de liquidación: ${CODIGO_BARRA}`, 'info', 'LIQUIDACION');
+
+    if (!CODIGO_BARRA) {
+        return res.status(400).json({ 
+            error: 'Código de barra es requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        const query = `UPDATE articulo_temp SET activo = 0 WHERE CODIGO_BARRA = ? AND cat = '3'`;
+        const result = await executeQuery(query, [CODIGO_BARRA], 'DELETE_LIQUIDACION');
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                error: 'Artículo en liquidación no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} eliminado de liquidación exitosamente`, 'success', 'LIQUIDACION');
+        res.json({ 
+            success: true, 
+            message: 'Artículo eliminado de liquidación',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando artículo de liquidación ${CODIGO_BARRA}: ${error.message}`, 'error', 'LIQUIDACION');
+        res.status(500).json({ 
+            error: 'Error al eliminar artículo de liquidación',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
+    const { CODIGO_BARRA, nombre, PRECIO } = req.body;
+
+    logAdmin(`Agregando artículo a liquidación: ${CODIGO_BARRA}`, 'info', 'LIQUIDACION');
+
+    if (!CODIGO_BARRA || !nombre || !PRECIO) {
+        return res.status(400).json({ 
+            error: 'Código de barra, nombre y precio son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // ✅ CORRECCIÓN: Query sin COUNT
+        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
+        const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
+        
+        if (!checkResult || checkResult.length === 0) {
+            return res.status(404).json({ 
+                error: 'El artículo no existe en el inventario principal',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+
+        const query = `
+            INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
+            VALUES (?, ?, ?, ?, ?, '3', 1)
+            ON DUPLICATE KEY UPDATE 
+                COD_INTERNO = VALUES(COD_INTERNO),
+                PRECIO = VALUES(PRECIO), 
+                PRECIO_DESC = VALUES(PRECIO_DESC),
+                activo = 1,
+                cat = '3'
+        `;
+
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_LIQUIDACION');
+
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a liquidación con COD_INTERNO: ${COD_INTERNO}`, 'success', 'LIQUIDACION');
+        res.json({ 
+            success: true, 
+            message: 'Artículo agregado a liquidación',
+            cod_interno: COD_INTERNO,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error agregando artículo a liquidación ${CODIGO_BARRA}: ${error.message}`, 'error', 'LIQUIDACION');
+        res.status(500).json({ 
+            error: 'Error al agregar artículo a liquidación',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+
 
 
 
@@ -2588,5 +2796,11 @@ module.exports = {
     actualizarStockProducto,
     buscarProductosAvanzado,
     obtenerCategoriasAdmin,
-    pedidosPendientesCheck
+    pedidosPendientesCheck,
+
+    // Liquidación
+    articulosLiquidacion,
+    agregarArticuloLiquidacion,
+    actualizarPrecioLiquidacion,
+    eliminarArticuloLiquidacion
 };

@@ -34,7 +34,7 @@ const logApp = (message, level = 'info', module = 'APP') => {
 const allowedOrigins = [
     'http://localhost:3000/',
     'http://localhost:3000',
-    'http://localhost:3001/',
+    'http://localhost:3001',
     'https://vps-5234411-x.dattaweb.com/',
     'https://vps-5234411-x.dattaweb.com'
 ];
@@ -269,9 +269,14 @@ logApp('✅ Rutas estáticas configuradas', 'success', 'STATIC');
 // ==============================================
 const storeRoutes = require('./routes/storeRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const estadisticasRoutes = require('./routes/estadisticasRoutes');
+
+// Usar el router con prefijo
+
 
 app.use('/store', storeRoutes);
 app.use('/admin', adminRoutes);
+app.use('/estadisticas', estadisticasRoutes);
 
 logApp('✅ Rutas de API configuradas', 'success', 'ROUTES');
 

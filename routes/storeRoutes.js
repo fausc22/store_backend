@@ -5,6 +5,7 @@ const router = express.Router();
 
 // RUTAS EXISTENTES (las que ya tienes)
 router.get('/articulosOF', storeController.articulosOferta);
+router.get('/articulosLI', storeController.articulosLiquidacion);
 router.get('/articulosDEST', storeController.articulosDestacados);
 
 router.get('/productosMAIN/:page?/:limit?', storeController.productosMain);
@@ -46,6 +47,7 @@ router.post('/reverseGeocode', storeController.reverseGeocode);
 
 
 
-
+router.get('/horario', storeController.verificarHorarioTienda);
+router.get('/horario/simple', storeController.estadoHorarioSimple);
 
 module.exports = router;

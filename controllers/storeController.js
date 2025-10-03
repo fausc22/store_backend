@@ -1,5 +1,5 @@
 // controllers/storeController.js - VERSIÓN OPTIMIZADA
-const { executeQuery, logConnection } = require('./db');
+const { executeQuery, logConnection } = require('./dbPS');
 const axios = require('axios');
 const mercadopago = require('mercadopago');
 const path = require('path');
@@ -122,12 +122,13 @@ const articulosOferta = asyncHandler(async (req, res) => {
         const query = `
             SELECT 
                 at.CODIGO_BARRA,
+                a.COD_INTERNO,
                 at.art_desc_vta,
                 a.${precioColumn} AS PRECIO,
                 at.PRECIO_DESC,
                 a.STOCK,
-                a.PESABLE,
-                a.COD_INTERNO
+                a.PESABLE
+                
             FROM articulo_temp at
             INNER JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
             WHERE at.cat = '1' 
@@ -163,12 +164,13 @@ const articulosDestacados = asyncHandler(async (req, res) => {
         const query = `
             SELECT 
                 at.CODIGO_BARRA,
+                a.COD_INTERNO,
                 at.art_desc_vta,
                 a.${precioColumn} AS PRECIO,
                 at.PRECIO_DESC,
                 a.STOCK,
-                a.PESABLE,
-                a.COD_INTERNO
+                a.PESABLE
+                
             FROM articulo_temp at
             INNER JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
             WHERE at.cat = '2' 
@@ -188,6 +190,48 @@ const articulosDestacados = asyncHandler(async (req, res) => {
         logController(`❌ Error obteniendo destacados: ${error.message}`, 'error', 'DESTACADOS');
         res.status(500).json({ 
             error: 'Error obteniendo artículos destacados',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+const articulosLiquidacion = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logController('Obteniendo artículos en liquidacion', 'info', 'LIQUIDACION');
+    
+    try {
+        const precioColumn = getPrecioColumn();
+
+        const query = `
+            SELECT 
+                at.CODIGO_BARRA,
+                at.cod_interno,
+                at.art_desc_vta,
+                a.${precioColumn} AS PRECIO,
+                at.PRECIO_DESC,
+                a.STOCK,
+                a.PESABLE,
+                a.COD_INTERNO
+            FROM articulo_temp at
+            INNER JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+            WHERE at.cat = '3' 
+            AND at.activo = 1 
+            AND a.HABILITADO = 'S'
+            AND (at.fecha_fin IS NULL OR at.fecha_fin > NOW())
+            ORDER BY at.orden ASC, at.fecha_inicio DESC
+            LIMIT 6;
+        `;
+
+        const results = await executeQuery(query, [], 'LIQUIDACION');
+
+        const duration = Date.now() - startTime;
+        logController(`✅ ${results.length} artículos en liquidacion obtenidos (${duration}ms)`, 'success', 'LIQUIDACION');
+
+        res.json(results);
+    } catch (error) {
+        logController(`❌ Error obteniendo artículos en liquidacion: ${error.message}`, 'error', 'LIQUIDACION');
+        res.status(500).json({ 
+            error: 'Error obteniendo artículos en liquidacion',
             timestamp: new Date().toISOString()
         });
     }
@@ -246,7 +290,8 @@ const productosQuery = `
                 ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
             END
         ) > 0
-        ORDER BY ${precioColumn} DESC 
+        AND STOCK >= STOCK_MIN
+        ORDER BY art_desc_vta ASC 
         LIMIT ${limit} OFFSET ${offset}
     `;
 
@@ -338,6 +383,7 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
                     ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
                 END
             ) > 0
+            AND STOCK >= STOCK_MIN
             ORDER BY ar.art_desc_vta ASC
             LIMIT ${limit} OFFSET ${offset}
         `;
@@ -436,6 +482,7 @@ const buscarProductos = asyncHandler(async (req, res) => {
                     ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
                 END
             ) > 0
+            AND STOCK >= STOCK_MIN
             ORDER BY 
                 CASE 
                     WHEN art_desc_vta LIKE ? THEN 1
@@ -591,6 +638,7 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                     ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
                 END
             ) > 0
+            AND STOCK >= STOCK_MIN
             ORDER BY RAND()
             LIMIT 6
         `;
@@ -883,13 +931,17 @@ const calculateShippingCost = (distance) => {
 // MERCADOPAGO OPTIMIZADO
 // ==============================================
 
+// ==============================================
+// MERCADOPAGO OPTIMIZADO - SIN TARJETAS DE CRÉDITO
+// ==============================================
+
 const client = new mercadopago.MercadoPagoConfig({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
 });
 const nombreTiendaMP = process.env.STORE_NAME || 'MercadoPago';
+
 const createPreference = asyncHandler(async (req, res) => {
     const { total } = req.body;
-    
     
     logController(`Creando preferencia MercadoPago - Total: ${total}`, 'info', 'MERCADOPAGO');
     
@@ -919,11 +971,17 @@ const createPreference = asyncHandler(async (req, res) => {
                 failure: "https://vps-5234411-x.dattaweb.com/tienda/pago-rechazado?status=failure", 
                 pending: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=pending"
             },
-            auto_return: "approved", // Redirección automática cuando se aprueba
+            auto_return: "approved",
             payment_methods: {
-                installments: 12
+                // ✅ EXCLUIR TARJETAS DE CRÉDITO
+                excluded_payment_types: [
+                    { id: "credit_card" }  // Excluye todas las tarjetas de crédito
+                ],
+                // ⚠️ ELIMINAR CUOTAS (solo aplican a crédito)
+                // installments: 12  // <-- QUITAR ESTA LÍNEA
+                installments: 1  // Solo pago en 1 cuota (débito/efectivo)
             },
-            external_reference: `pedido_${Date.now()}` // Para identificar el pedido
+            external_reference: `pedido_${Date.now()}`
         };
         
         const preference = new mercadopago.Preference(client);
@@ -1799,6 +1857,236 @@ const reverseGeocode = asyncHandler(async (req, res) => {
     }
 });
 
+// Reemplaza COMPLETAMENTE tus funciones verificarHorarioTienda y estadoHorarioSimple con este código
+
+const verificarHorarioTienda = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logController('Verificando horario de la tienda', 'info', 'HORARIOS');
+    
+    try {
+        // Valores por defecto si no están en .env
+        const horaInicio = process.env.HORA_INICIO || '08:00';
+        const horaFin = process.env.HORA_FIN || '22:00';
+        
+        // Validar formato de horarios
+        const validarFormatoHora = (hora) => {
+            const regex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+            return regex.test(hora);
+        };
+
+        if (!validarFormatoHora(horaInicio) || !validarFormatoHora(horaFin)) {
+            throw new Error(`Formato de horario inválido. Inicio: ${horaInicio}, Fin: ${horaFin}`);
+        }
+        
+        // Obtener hora actual en Argentina (UTC-3)
+        const now = new Date();
+        const argentinaTime = new Date(now.toLocaleString("en-US", {timeZone: "America/Argentina/Cordoba"}));
+        
+        const currentHour = argentinaTime.getHours();
+        const currentMinute = argentinaTime.getMinutes();
+        const currentTimeInMinutes = currentHour * 60 + currentMinute;
+        
+        // Convertir horarios de apertura y cierre a minutos con validación
+        let horaInicioHora, horaInicioMinuto, horaFinHora, horaFinMinuto;
+        
+        try {
+            [horaInicioHora, horaInicioMinuto] = horaInicio.split(':').map(Number);
+            [horaFinHora, horaFinMinuto] = horaFin.split(':').map(Number);
+        } catch (parseError) {
+            throw new Error(`Error parseando horarios: ${parseError.message}`);
+        }
+        
+        // Validar que los números sean válidos
+        if (isNaN(horaInicioHora) || isNaN(horaInicioMinuto) || isNaN(horaFinHora) || isNaN(horaFinMinuto)) {
+            throw new Error('Horarios contienen valores no numéricos');
+        }
+        
+        const inicioEnMinutos = horaInicioHora * 60 + horaInicioMinuto;
+        let finEnMinutos = horaFinHora * 60 + horaFinMinuto;
+        
+        // Si la hora de fin es menor que la de inicio, significa que cruza medianoche
+        const cruzaMedianoche = finEnMinutos < inicioEnMinutos;
+        
+        let estaAbierto = false;
+        let tiempoParaAbrir = 0;
+        let tiempoParaCerrar = 0;
+        
+        if (cruzaMedianoche) {
+            // Ejemplo: 08:00 a 02:00 (cruza medianoche)
+            estaAbierto = currentTimeInMinutes >= inicioEnMinutos || currentTimeInMinutes <= finEnMinutos;
+            
+            if (estaAbierto) {
+                // Calcular tiempo hasta el cierre
+                if (currentTimeInMinutes >= inicioEnMinutos) {
+                    // Estamos en el mismo día, cerraremos después de medianoche
+                    tiempoParaCerrar = (24 * 60) - currentTimeInMinutes + finEnMinutos;
+                } else {
+                    // Ya pasamos medianoche, cerraremos hoy
+                    tiempoParaCerrar = finEnMinutos - currentTimeInMinutes;
+                }
+            } else {
+                // Calcular tiempo hasta la apertura
+                tiempoParaAbrir = inicioEnMinutos - currentTimeInMinutes;
+            }
+        } else {
+            // Horario normal sin cruzar medianoche
+            estaAbierto = currentTimeInMinutes >= inicioEnMinutos && currentTimeInMinutes <= finEnMinutos;
+            
+            if (estaAbierto) {
+                tiempoParaCerrar = finEnMinutos - currentTimeInMinutes;
+            } else if (currentTimeInMinutes < inicioEnMinutos) {
+                tiempoParaAbrir = inicioEnMinutos - currentTimeInMinutes;
+            } else {
+                // Es después del horario de cierre
+                tiempoParaAbrir = (24 * 60) - currentTimeInMinutes + inicioEnMinutos;
+            }
+        }
+        
+        // Formatear horarios para mostrar
+        const formatearHora = (hora) => {
+            try {
+                const [h, m] = hora.split(':');
+                const hora24 = parseInt(h);
+                const minutos = m.padStart(2, '0');
+                
+                if (hora24 === 0) return `12:${minutos} AM`;
+                if (hora24 < 12) return `${hora24}:${minutos} AM`;
+                if (hora24 === 12) return `12:${minutos} PM`;
+                return `${hora24 - 12}:${minutos} PM`;
+            } catch (error) {
+                return hora;
+            }
+        };
+        
+        const resultado = {
+            estaAbierto: estaAbierto,
+            horarios: {
+                apertura: horaInicio,
+                cierre: horaFin,
+                aperturaFormateada: formatearHora(horaInicio),
+                cierreFormateada: formatearHora(horaFin)
+            },
+            horaActual: {
+                hora: currentHour,
+                minuto: currentMinute,
+                formateada: argentinaTime.toLocaleTimeString('es-AR', { 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    hour12: true 
+                })
+            },
+            tiempos: {
+                minutosParaAbrir: Math.max(0, tiempoParaAbrir),
+                minutosParaCerrar: Math.max(0, tiempoParaCerrar),
+                horasParaAbrir: Math.floor(Math.max(0, tiempoParaAbrir) / 60),
+                horasParaCerrar: Math.floor(Math.max(0, tiempoParaCerrar) / 60)
+            },
+            cruzaMedianoche: cruzaMedianoche,
+            timezone: 'America/Argentina/Cordoba',
+            debug: {
+                currentTimeInMinutes: currentTimeInMinutes,
+                inicioEnMinutos: inicioEnMinutos,
+                finEnMinutos: finEnMinutos,
+                horaInicioParseada: `${horaInicioHora}:${horaInicioMinuto}`,
+                horaFinParseada: `${horaFinHora}:${horaFinMinuto}`
+            }
+        };
+        
+        const duration = Date.now() - startTime;
+        logController(`✅ Horario verificado (${duration}ms): ${estaAbierto ? 'ABIERTO' : 'CERRADO'}`, 'success', 'HORARIOS');
+        
+        res.json(resultado);
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logController(`❌ Error verificando horario (${duration}ms): ${error.message}`, 'error', 'HORARIOS');
+        
+        console.error('Detalles del error:', {
+            message: error.message,
+            stack: error.stack,
+            env: {
+                HORA_INICIO: process.env.HORA_INICIO,
+                HORA_FIN: process.env.HORA_FIN
+            }
+        });
+        
+        res.status(500).json({ 
+            error: 'Error verificando horario de la tienda',
+            details: error.message,
+            timestamp: new Date().toISOString(),
+            estaAbierto: true,
+            mensaje: 'Error al verificar horarios, se permite continuar',
+            horarios: {
+                apertura: process.env.HORA_INICIO || '08:00',
+                cierre: process.env.HORA_FIN || '22:00',
+                aperturaFormateada: '8:00 AM',
+                cierreFormateada: '10:00 PM'
+            }
+        });
+    }
+});
+
+const estadoHorarioSimple = asyncHandler(async (req, res) => {
+    logController('Obteniendo estado simple del horario', 'info', 'HORARIOS');
+    
+    try {
+        const horaInicio = process.env.HORA_INICIO || '08:00';
+        const horaFin = process.env.HORA_FIN || '22:00';
+        
+        const validarFormatoHora = (hora) => {
+            const regex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+            return regex.test(hora);
+        };
+
+        if (!validarFormatoHora(horaInicio) || !validarFormatoHora(horaFin)) {
+            throw new Error(`Formato de horario inválido`);
+        }
+        
+        const now = new Date();
+        const argentinaTime = new Date(now.toLocaleString("en-US", {timeZone: "America/Argentina/Cordoba"}));
+        const currentHour = argentinaTime.getHours();
+        const currentMinute = argentinaTime.getMinutes();
+        const currentTimeInMinutes = currentHour * 60 + currentMinute;
+        
+        const [horaInicioHora, horaInicioMinuto] = horaInicio.split(':').map(Number);
+        const [horaFinHora, horaFinMinuto] = horaFin.split(':').map(Number);
+        
+        const inicioEnMinutos = horaInicioHora * 60 + horaInicioMinuto;
+        let finEnMinutos = horaFinHora * 60 + horaFinMinuto;
+        
+        const cruzaMedianoche = finEnMinutos < inicioEnMinutos;
+        let estaAbierto = false;
+        
+        if (cruzaMedianoche) {
+            estaAbierto = currentTimeInMinutes >= inicioEnMinutos || currentTimeInMinutes <= finEnMinutos;
+        } else {
+            estaAbierto = currentTimeInMinutes >= inicioEnMinutos && currentTimeInMinutes <= finEnMinutos;
+        }
+        
+        logController(`✅ Estado simple obtenido: ${estaAbierto ? 'ABIERTO' : 'CERRADO'}`, 'success', 'HORARIOS');
+        
+        res.json({
+            estaAbierto: estaAbierto,
+            horaInicio: horaInicio,
+            horaFin: horaFin,
+            horaActual: argentinaTime.toLocaleTimeString('es-AR', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            })
+        });
+        
+    } catch (error) {
+        logController(`❌ Error en estado simple: ${error.message}`, 'error', 'HORARIOS');
+        
+        res.status(500).json({ 
+            error: 'Error obteniendo estado del horario',
+            details: error.message,
+            estaAbierto: true,
+            horaInicio: process.env.HORA_INICIO || '08:00',
+            horaFin: process.env.HORA_FIN || '22:00'
+        });
+    }
+});
 
 // ==============================================
 // EXPORTAR TODOS LOS CONTROLADORES
@@ -1807,6 +2095,7 @@ const reverseGeocode = asyncHandler(async (req, res) => {
 module.exports = {
     articulosOferta,
     articulosDestacados,
+    articulosLiquidacion,
     productosMain,
     filtradoCategorias,
     buscarProductos,
@@ -1829,5 +2118,7 @@ module.exports = {
     eliminarOfertaDestacado,
     searchAddresses,
     
-    reverseGeocode
+    reverseGeocode,
+    verificarHorarioTienda,
+    estadoHorarioSimple
 };

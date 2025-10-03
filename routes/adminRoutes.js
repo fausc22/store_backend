@@ -122,7 +122,10 @@ router.get('/verificar-imagen-producto/:codigoBarra', imagenController.verificar
 router.delete('/eliminar-imagen-producto/:codigoBarra', imagenController.eliminarImagenProducto);
 
 
-
+router.get('/productosLiquidacion', adminController.articulosLiquidacion);
+router.post('/agregarArticuloLiquidacion', adminController.agregarArticuloLiquidacion);
+router.put('/actualizarPrecioLiquidacion', adminController.actualizarPrecioLiquidacion);
+router.delete('/eliminarArticuloLiquidacion/:CODIGO_BARRA', adminController.eliminarArticuloLiquidacion);
 
 
 // ==============================================
