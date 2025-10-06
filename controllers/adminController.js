@@ -53,6 +53,18 @@ const getParametersFromPath = (req) => {
 };
 
 
+const getPrecioCalculadoSQL = () => {
+    return `
+        CASE 
+            WHEN a.COD_IVA = 0 THEN ROUND(a.precio_sin_iva_4 * 1.21, 2) + ROUND(a.costo * a.porc_impint / 100, 2)
+            WHEN a.COD_IVA = 1 THEN ROUND(a.precio_sin_iva_4 * 1.105, 2) + ROUND(a.costo * a.porc_impint / 100, 2)
+            WHEN a.COD_IVA = 2 THEN ROUND(a.precio_sin_iva_4, 2) + ROUND(a.costo * a.porc_impint / 100, 2)
+            ELSE ROUND(a.precio_sin_iva_4 * 1.21, 2) + ROUND(a.costo * a.porc_impint / 100, 2)
+        END
+    `;
+};
+
+
 // ==============================================
 // AUTENTICACIÓN Y CONFIGURACIÓN
 // ==============================================
@@ -881,11 +893,11 @@ const actualizarPedido = asyncHandler(async (req, res) => {
 });
 
 const agregarProductoAlPedido = asyncHandler(async (req, res) => {
-    const { id_pedido, codigo_barra, nombre_producto, cantidad, precio, subtotal } = req.body;
+    const { id_pedido, codigo_barra, nombre_producto, cantidad } = req.body;
 
     logAdmin(`Agregando producto al pedido: ${id_pedido}`, 'info', 'PEDIDOS');
 
-    if (!id_pedido || !codigo_barra || !nombre_producto || !cantidad || !precio) {
+    if (!id_pedido || !codigo_barra || !nombre_producto || !cantidad) {
         return res.status(400).json({ 
             success: false,
             error: 'Todos los campos son requeridos',
@@ -895,7 +907,6 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
 
     let connection;
     try {
-        // Iniciar transacción para consistencia
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
@@ -914,7 +925,6 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             });
         }
 
-        // 2. Verificar que el pedido puede ser modificado
         const estadoPedido = pedidoResult[0].estado.toLowerCase();
         const estadosModificables = ['pendiente', 'confirmado'];
         
@@ -927,7 +937,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             });
         }
 
-        // 3. Verificar que el producto no esté ya en el pedido (evitar duplicados)
+        // 2. Verificar duplicados
         const [duplicateCheck] = await connection.execute(
             `SELECT COUNT(*) as count FROM pedidos_contenido WHERE id_pedido = ? AND codigo_barra = ?`,
             [id_pedido, codigo_barra]
@@ -937,25 +947,37 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             await connection.rollback();
             return res.status(409).json({ 
                 success: false,
-                error: 'Este producto ya está en el pedido. Use la función editar para modificar la cantidad.',
+                error: 'Este producto ya está en el pedido.',
                 timestamp: new Date().toISOString()
             });
         }
 
-        // 4. Obtener cod_interno del producto desde la tabla articulo
-        const [articuloResult] = await connection.execute(
-            `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ?`,
-            [codigo_barra]
-        );
+        // 3. 🔴 OBTENER PRECIO CALCULADO DINÁMICAMENTE
+        const precioSQL = getPrecioCalculadoSQL();
+        
+        const [articuloResult] = await connection.execute(`
+            SELECT 
+                COD_INTERNO,
+                ${precioSQL} AS precio_calculado
+            FROM articulo a
+            WHERE CODIGO_BARRA = ?
+        `, [codigo_barra]);
 
-        const cod_interno = articuloResult.length > 0 ? articuloResult[0].COD_INTERNO : null;
+        if (articuloResult.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                success: false,
+                error: 'Producto no encontrado en inventario',
+                timestamp: new Date().toISOString()
+            });
+        }
 
-        // 5. CALCULAR SUBTOTAL en el backend por seguridad
-        const precioNum = parseFloat(precio);
+        const cod_interno = articuloResult[0].COD_INTERNO || null;
+        const precioCalculado = parseFloat(articuloResult[0].precio_calculado) || 0; // ✅ USAR ESTE
+
         const cantidadNum = parseInt(cantidad);
-        const subtotalCalculado = precioNum * cantidadNum;
 
-        // 6. Insertar producto con cod_interno
+        // 4. Insertar producto con precio calculado
         const [insertResult] = await connection.execute(`
             INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio) 
             VALUES (?, ?, ?, ?, ?, ?)
@@ -965,11 +987,10 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             cod_interno,
             nombre_producto, 
             cantidadNum, 
-            precioNum
-            // NO enviar subtotalCalculado - la BD lo calculará automáticamente
+            precioCalculado // ✅ PRECIO CALCULADO DINÁMICAMENTE
         ]);
 
-        // 7. ACTUALIZAR TOTALES DEL PEDIDO INMEDIATAMENTE
+        // 5. Actualizar totales del pedido
         const [updateResult] = await connection.execute(`
             UPDATE pedidos 
             SET 
@@ -987,13 +1008,12 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             WHERE id_pedido = ?
         `, [id_pedido, id_pedido, id_pedido]);
 
-        // 8. Obtener los totales actualizados para respuesta
+        // 6. Obtener totales actualizados
         const [totalResult] = await connection.execute(
             `SELECT monto_total, cantidad_productos FROM pedidos WHERE id_pedido = ?`,
             [id_pedido]
         );
 
-        // 9. Confirmar transacción
         await connection.commit();
 
         const response = {
@@ -1003,7 +1023,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
                 producto_id: insertResult.insertId,
                 pedido_id: id_pedido,
                 cod_interno: cod_interno,
-                subtotal_calculado: subtotalCalculado,
+                precio_usado: precioCalculado, // ✅ INFORMAR PRECIO USADO
                 totales_actualizados: {
                     monto_total: totalResult[0].monto_total,
                     cantidad_productos: totalResult[0].cantidad_productos
@@ -1012,7 +1032,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
             timestamp: new Date().toISOString()
         };
 
-        logAdmin(`✅ Producto agregado al pedido ${id_pedido} y totales actualizados`, 'success', 'PEDIDOS');
+        logAdmin(`✅ Producto agregado al pedido ${id_pedido} con precio calculado ${precioCalculado}`, 'success', 'PEDIDOS');
         res.json(response);
 
     } catch (error) {
@@ -1032,6 +1052,7 @@ const agregarProductoAlPedido = asyncHandler(async (req, res) => {
         }
     }
 });
+
 
 const eliminarProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
@@ -1252,8 +1273,18 @@ const agregarArticuloOferta = asyncHandler(async (req, res) => {
     }
 
     try {
-        // ✅ CORRECCIÓN: Query sin COUNT
-        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
+        // ✅ OBTENER PRECIO CALCULADO DINÁMICAMENTE
+        const precioSQL = getPrecioCalculadoSQL();
+        
+        const checkQuery = `
+            SELECT 
+                COD_INTERNO,
+                ${precioSQL} AS precio_calculado
+            FROM articulo a 
+            WHERE CODIGO_BARRA = ? 
+            LIMIT 1
+        `;
+        
         const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
         
         if (!checkResult || checkResult.length === 0) {
@@ -1264,6 +1295,7 @@ const agregarArticuloOferta = asyncHandler(async (req, res) => {
         }
 
         const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+        const precioCalculado = parseFloat(checkResult[0].precio_calculado) || 0; // ✅ PRECIO CORRECTO
 
         const query = `
             INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
@@ -1276,13 +1308,14 @@ const agregarArticuloOferta = asyncHandler(async (req, res) => {
                 cat = '1'
         `;
 
-        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_OFERTA');
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, precioCalculado, precioCalculado], 'INSERT_OFERTA');
 
-        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a ofertas con COD_INTERNO: ${COD_INTERNO}`, 'success', 'OFERTAS');
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a ofertas con precio calculado: ${precioCalculado}`, 'success', 'OFERTAS');
         res.json({ 
             success: true, 
             message: 'Artículo agregado a oferta',
             cod_interno: COD_INTERNO,
+            precio_calculado: precioCalculado, // ✅ INFORMAR PRECIO USADO
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -1307,8 +1340,18 @@ const agregarArticuloDest = asyncHandler(async (req, res) => {
     }
 
     try {
-        // ✅ CORRECCIÓN: Query sin COUNT
-        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
+        // ✅ OBTENER PRECIO CALCULADO DINÁMICAMENTE
+        const precioSQL = getPrecioCalculadoSQL();
+        
+        const checkQuery = `
+            SELECT 
+                COD_INTERNO,
+                ${precioSQL} AS precio_calculado
+            FROM articulo a 
+            WHERE CODIGO_BARRA = ? 
+            LIMIT 1
+        `;
+        
         const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
         
         if (!checkResult || checkResult.length === 0) {
@@ -1319,6 +1362,7 @@ const agregarArticuloDest = asyncHandler(async (req, res) => {
         }
 
         const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+        const precioCalculado = parseFloat(checkResult[0].precio_calculado) || 0; // ✅ PRECIO CORRECTO
 
         const query = `
             INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
@@ -1331,13 +1375,14 @@ const agregarArticuloDest = asyncHandler(async (req, res) => {
                 cat = '2'
         `;
 
-        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_DESTACADO');
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, precioCalculado, precioCalculado], 'INSERT_DESTACADO');
 
-        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a destacados con COD_INTERNO: ${COD_INTERNO}`, 'success', 'DESTACADOS');
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a destacados con precio calculado: ${precioCalculado}`, 'success', 'DESTACADOS');
         res.json({ 
             success: true, 
             message: 'Artículo agregado a destacados',
             cod_interno: COD_INTERNO,
+            precio_calculado: precioCalculado, // ✅ INFORMAR PRECIO USADO
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -1870,29 +1915,23 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
     logAdmin('Obteniendo todos los productos', 'info', 'PRODUCTOS');
     
     try {
-        // Usar la columna de precio correcta según IVA configurado
-        const ivaLevel = parseInt(process.env.IVA) || 0;
-        let precioColumn = 'PRECIO_SIN_IVA';
-        
-        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
-        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
-        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
-        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        const precioSQL = getPrecioCalculadoSQL();
         
         const query = `
             SELECT 
                 COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
                 a.CODIGO_BARRA AS codigo_barra, 
                 COALESCE(a.COSTO, 0) AS costo, 
-                COALESCE(a.PRECIO, 0) AS precio,
-                COALESCE(a.${precioColumn}, 0) AS precio_sin_iva, 
-                COALESCE(a.PRECIO_SIN_IVA_4, 0) AS precio_sin_iva_4,
+                ${precioSQL} AS precio,
+                COALESCE(a.precio_sin_iva_4, 0) AS precio_sin_iva_4,
                 a.COD_DPTO AS categoria_id,
                 COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
                 COALESCE(a.STOCK, '0') AS stock,
                 COALESCE(a.HABILITADO, 'S') AS habilitado,
                 COALESCE(a.marca, '') AS marca,
-                a.COD_INTERNO AS cod_interno
+                a.COD_INTERNO AS cod_interno,
+                a.COD_IVA,
+                a.porc_impint
             FROM articulo a
             LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
             WHERE a.HABILITADO IN ('S', 'N')
@@ -1902,12 +1941,10 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
         
         const results = await executeQuery(query, [], 'TODOS_PRODUCTOS');
         
-        // Procesar los resultados para asegurar tipos correctos
         const productosFormateados = results.map(producto => ({
             ...producto,
             costo: parseFloat(producto.costo) || 0,
             precio: parseFloat(producto.precio) || 0,
-            precio_sin_iva: parseFloat(producto.precio_sin_iva) || 0,
             precio_sin_iva_4: parseFloat(producto.precio_sin_iva_4) || 0,
             stock: parseInt(producto.stock) || 0,
             categoria: producto.categoria || 'Sin categoría'
@@ -1919,10 +1956,8 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
         res.json(productosFormateados);
     } catch (error) {
         logAdmin(`❌ Error obteniendo todos los productos: ${error.message}`, 'error', 'PRODUCTOS');
-        console.error('Stack trace:', error.stack);
         res.status(500).json({ 
             error: 'Error al obtener productos',
-            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
             timestamp: new Date().toISOString()
         });
     }
@@ -1943,26 +1978,22 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Usar la columna de precio correcta según IVA configurado
-        const ivaLevel = parseInt(process.env.IVA) || 0;
-        let precioColumn = 'PRECIO_SIN_IVA';
-        
-        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
-        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
-        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
-        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        const precioSQL = getPrecioCalculadoSQL();
         
         const query = `
             SELECT 
                 COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
                 a.CODIGO_BARRA AS codigo_barra, 
                 COALESCE(a.COSTO, 0) AS costo, 
-                COALESCE(a.${precioColumn}, 0) AS precio, 
+                ${precioSQL} AS precio,
                 a.COD_DPTO AS categoria_id,
                 COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
                 COALESCE(a.STOCK, '0') AS stock,
                 COALESCE(a.HABILITADO, 'S') AS habilitado,
-                COALESCE(a.marca, '') AS marca
+                COALESCE(a.marca, '') AS marca,
+                a.COD_INTERNO AS cod_interno,
+                a.COD_IVA,
+                a.porc_impint
             FROM articulo a
             LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
             WHERE (a.art_desc_vta LIKE ? OR a.NOMBRE LIKE ? OR a.CODIGO_BARRA LIKE ?)
@@ -1974,7 +2005,6 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
         const searchPattern = `%${searchTerm}%`;
         const results = await executeQuery(query, [searchPattern, searchPattern, searchPattern], 'BUSCAR_PRODUCTOS');
         
-        // Procesar los resultados
         const productosFormateados = results.map(producto => ({
             ...producto,
             costo: parseFloat(producto.costo) || 0,
@@ -2094,29 +2124,24 @@ const obtenerProductoPorCodigo = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Usar la columna de precio correcta según IVA configurado
-        const ivaLevel = parseInt(process.env.IVA) || 0;
-        let precioColumn = 'PRECIO_SIN_IVA';
-        
-        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
-        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
-        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
-        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
+        const precioSQL = getPrecioCalculadoSQL();
         
         const query = `
             SELECT 
-                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
-                CODIGO_BARRA AS codigo_barra, 
-                COSTO AS costo, 
-                PRECIO AS precio,
-                ${precioColumn} AS precio_sin_iva, 
-                PRECIO_SIN_IVA_4 AS precio_sin_iva_4,
-                COD_DPTO AS categoria,
-                STOCK AS stock,
-                HABILITADO AS habilitado,
-                DESCRIPCION AS descripcion
-            FROM articulo 
-            WHERE CODIGO_BARRA = ?
+                COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
+                a.CODIGO_BARRA AS codigo_barra, 
+                a.COSTO AS costo, 
+                ${precioSQL} AS precio,
+                a.precio_sin_iva_4 AS precio_sin_iva_4,
+                a.COD_DPTO AS categoria,
+                a.STOCK AS stock,
+                a.HABILITADO AS habilitado,
+                a.DESCRIPCION AS descripcion,
+                a.COD_INTERNO AS cod_interno,
+                a.COD_IVA,
+                a.porc_impint
+            FROM articulo a
+            WHERE a.CODIGO_BARRA = ?
         `;
         
         const results = await executeQuery(query, [codigoBarra], 'GET_PRODUCTO_BY_CODE');
@@ -2393,111 +2418,101 @@ const buscarProductosAvanzado = asyncHandler(async (req, res) => {
     logAdmin(`Búsqueda avanzada de productos`, 'info', 'PRODUCTOS');
     
     try {
-        // Usar la columna de precio correcta según IVA configurado
-        const ivaLevel = parseInt(process.env.IVA) || 0;
-        let precioColumn = 'PRECIO_SIN_IVA';
+        const precioSQL = getPrecioCalculadoSQL();
         
-        if (ivaLevel === 1) precioColumn = 'PRECIO_SIN_IVA_1';
-        else if (ivaLevel === 2) precioColumn = 'PRECIO_SIN_IVA_2';
-        else if (ivaLevel === 3) precioColumn = 'PRECIO_SIN_IVA_3';
-        else if (ivaLevel === 4) precioColumn = 'PRECIO_SIN_IVA_4';
-
-        // Construir consulta dinámica
         let whereConditions = [];
         let params = [];
 
-        // Búsqueda por término
         if (termino && termino.trim().length >= 2) {
             const searchPattern = `%${termino.trim()}%`;
-            whereConditions.push(`(art_desc_vta LIKE ? OR NOMBRE LIKE ? OR CODIGO_BARRA LIKE ?)`);
+            whereConditions.push(`(a.art_desc_vta LIKE ? OR a.NOMBRE LIKE ? OR a.CODIGO_BARRA LIKE ?)`);
             params.push(searchPattern, searchPattern, searchPattern);
         }
 
-        // Filtros adicionales
         if (categoria) {
-            whereConditions.push(`COD_DPTO = ?`);
+            whereConditions.push(`a.COD_DPTO = ?`);
             params.push(categoria);
         }
 
         if (estado) {
             switch (estado) {
                 case 'habilitado':
-                    whereConditions.push(`HABILITADO = 'S'`);
+                    whereConditions.push(`a.HABILITADO = 'S'`);
                     break;
                 case 'deshabilitado':
-                    whereConditions.push(`HABILITADO = 'N'`);
+                    whereConditions.push(`a.HABILITADO = 'N'`);
                     break;
                 case 'en_stock':
-                    whereConditions.push(`STOCK > 0`);
+                    whereConditions.push(`a.STOCK > 0`);
                     break;
                 case 'sin_stock':
-                    whereConditions.push(`STOCK = 0`);
+                    whereConditions.push(`a.STOCK = 0`);
                     break;
                 case 'stock_bajo':
-                    whereConditions.push(`STOCK > 0 AND STOCK <= 10`);
+                    whereConditions.push(`a.STOCK > 0 AND a.STOCK <= 10`);
                     break;
             }
         }
 
         if (stockMinimo) {
-            whereConditions.push(`STOCK >= ?`);
+            whereConditions.push(`a.STOCK >= ?`);
             params.push(parseInt(stockMinimo));
         }
 
         if (stockMaximo) {
-            whereConditions.push(`STOCK <= ?`);
+            whereConditions.push(`a.STOCK <= ?`);
             params.push(parseInt(stockMaximo));
         }
 
+        // Para filtrar por precio CALCULADO
         if (precioMinimo) {
-            whereConditions.push(`PRECIO >= ?`);
+            whereConditions.push(`(${precioSQL}) >= ?`);
             params.push(parseFloat(precioMinimo));
         }
 
         if (precioMaximo) {
-            whereConditions.push(`PRECIO <= ?`);
+            whereConditions.push(`(${precioSQL}) <= ?`);
             params.push(parseFloat(precioMaximo));
         }
 
-        // Si no hay condiciones, agregar una condición por defecto
         if (whereConditions.length === 0) {
-            whereConditions.push(`HABILITADO IN ('S', 'N')`);
+            whereConditions.push(`a.HABILITADO IN ('S', 'N')`);
         }
 
         const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-        // Paginación
-        const limitValue = Math.min(parseInt(limite) || 50, 200); // Máximo 200 por página
-        const offset = (parseInt(pagina) || 1 - 1) * limitValue;
+        const limitValue = Math.min(parseInt(limite) || 50, 200);
+        const offset = ((parseInt(pagina) || 1) - 1) * limitValue;
 
         const query = `
             SELECT 
-                COALESCE(art_desc_vta, NOMBRE) AS nombre, 
-                CODIGO_BARRA AS codigo_barra, 
-                COSTO AS costo, 
-                PRECIO AS precio,
-                ${precioColumn} AS precio_sin_iva, 
-                PRECIO_SIN_IVA_4 AS precio_sin_iva_4,
-                COD_DPTO AS categoria,
-                STOCK AS stock,
-                HABILITADO AS habilitado,
-                DESCRIPCION AS descripcion
-            FROM articulo 
+                COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
+                a.CODIGO_BARRA AS codigo_barra, 
+                a.COSTO AS costo, 
+                ${precioSQL} AS precio,
+                a.precio_sin_iva_4 AS precio_sin_iva_4,
+                a.COD_DPTO AS categoria,
+                a.STOCK AS stock,
+                a.HABILITADO AS habilitado,
+                a.DESCRIPCION AS descripcion,
+                a.COD_INTERNO AS cod_interno,
+                a.COD_IVA,
+                a.porc_impint
+            FROM articulo a
             ${whereClause}
-            ORDER BY COALESCE(art_desc_vta, NOMBRE) ASC
+            ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
             LIMIT ? OFFSET ?
         `;
 
         params.push(limitValue, offset);
 
-        // También obtener el total para la paginación
         const countQuery = `
             SELECT COUNT(*) as total 
-            FROM articulo 
+            FROM articulo a
             ${whereClause}
         `;
 
-        const countParams = params.slice(0, -2); // Remover LIMIT y OFFSET
+        const countParams = params.slice(0, -2);
 
         const [results, countResult] = await Promise.all([
             executeQuery(query, params, 'BUSQUEDA_AVANZADA'),
@@ -2520,15 +2535,7 @@ const buscarProductosAvanzado = asyncHandler(async (req, res) => {
                 hayAnterior: (parseInt(pagina) || 1) > 1,
                 haySiguiente: (parseInt(pagina) || 1) < totalPaginas
             },
-            filtros: {
-                termino: termino || '',
-                categoria: categoria || '',
-                estado: estado || '',
-                stockMinimo: stockMinimo || '',
-                stockMaximo: stockMaximo || '',
-                precioMinimo: precioMinimo || '',
-                precioMaximo: precioMaximo || ''
-            }
+            filtros: filtros
         });
     } catch (error) {
         logAdmin(`❌ Error en búsqueda avanzada: ${error.message}`, 'error', 'PRODUCTOS');
@@ -2698,8 +2705,18 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
     }
 
     try {
-        // ✅ CORRECCIÓN: Query sin COUNT
-        const checkQuery = `SELECT COD_INTERNO FROM articulo WHERE CODIGO_BARRA = ? LIMIT 1`;
+        // ✅ OBTENER PRECIO CALCULADO DINÁMICAMENTE
+        const precioSQL = getPrecioCalculadoSQL();
+        
+        const checkQuery = `
+            SELECT 
+                COD_INTERNO,
+                ${precioSQL} AS precio_calculado
+            FROM articulo a 
+            WHERE CODIGO_BARRA = ? 
+            LIMIT 1
+        `;
+        
         const checkResult = await executeQuery(checkQuery, [CODIGO_BARRA], 'CHECK_ARTICULO');
         
         if (!checkResult || checkResult.length === 0) {
@@ -2710,6 +2727,7 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
         }
 
         const COD_INTERNO = checkResult[0].COD_INTERNO || 0;
+        const precioCalculado = parseFloat(checkResult[0].precio_calculado) || 0; // ✅ PRECIO CORRECTO
 
         const query = `
             INSERT INTO articulo_temp (CODIGO_BARRA, COD_INTERNO, art_desc_vta, PRECIO, PRECIO_DESC, cat, activo) 
@@ -2722,13 +2740,14 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
                 cat = '3'
         `;
 
-        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, PRECIO, PRECIO], 'INSERT_LIQUIDACION');
+        await executeQuery(query, [CODIGO_BARRA, COD_INTERNO, nombre, precioCalculado, precioCalculado], 'INSERT_LIQUIDACION');
 
-        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a liquidación con COD_INTERNO: ${COD_INTERNO}`, 'success', 'LIQUIDACION');
+        logAdmin(`✅ Artículo ${CODIGO_BARRA} agregado a liquidación con precio calculado: ${precioCalculado}`, 'success', 'LIQUIDACION');
         res.json({ 
             success: true, 
             message: 'Artículo agregado a liquidación',
             cod_interno: COD_INTERNO,
+            precio_calculado: precioCalculado, // ✅ INFORMAR PRECIO USADO
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -2739,7 +2758,6 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
         });
     }
 });
-
 
 
 
@@ -2802,5 +2820,6 @@ module.exports = {
     articulosLiquidacion,
     agregarArticuloLiquidacion,
     actualizarPrecioLiquidacion,
-    eliminarArticuloLiquidacion
+    eliminarArticuloLiquidacion,
+    getPrecioCalculadoSQL
 };
