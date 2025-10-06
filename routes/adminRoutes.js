@@ -113,11 +113,13 @@ router.post('/mailPedidoRetiro', adminController.MailPedidoRetiro);
 
  //Imágenes de publicidad
 router.post('/subir-imagen-publicidad', imagenController.subirImagenPublicidad);
+router.post('/subir-imagen-publicidad-base64', imagenController.subirImagenPublicidadBase64);
 router.get('/imagenes-publicidad', imagenController.obtenerImagenesPublicidad);
 router.delete('/eliminar-imagen-publicidad/:nombreArchivo', imagenController.eliminarImagenPublicidad);
 
 // Imágenes de productos
 router.post('/subir-imagen-producto', imagenController.subirImagenProducto);
+router.post('/subir-imagen-producto-base64', imagenController.subirImagenProductoBase64);
 router.get('/verificar-imagen-producto/:codigoBarra', imagenController.verificarImagenProducto);
 router.delete('/eliminar-imagen-producto/:codigoBarra', imagenController.eliminarImagenProducto);
 
@@ -172,7 +174,6 @@ router.use('*', (req, res) => {
             'GET /admin/pedidos-entregados - Pedidos entregados',
             'GET /admin/productosOferta - Productos en oferta',
             'GET /admin/productosDest - Productos destacados',
-            'GET /admin/getStats - Estadísticas',
             'GET /admin/variablesenv - Variables de configuración'
         ]
     });

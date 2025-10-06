@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const sharp = require('sharp');
 
 // ==============================================
 // SISTEMA DE LOGS MEJORADO
@@ -681,6 +682,221 @@ const eliminarImagenProducto = asyncHandler(async (req, res) => {
     }
 });
 
+
+const subirImagenPublicidadBase64 = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logImagen('🚀 Iniciando subida de imagen Base64 (publicidad)', 'info', 'PUBLICIDAD_BASE64');
+    
+    try {
+        const { imagen, nombreArchivo, tipoArchivo, tamaño } = req.body;
+        
+        // Validar datos recibidos
+        if (!imagen) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'No se recibió imagen en Base64' 
+            });
+        }
+        
+        if (!nombreArchivo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Nombre de archivo es requerido' 
+            });
+        }
+        
+        logImagen(`📋 Archivo recibido: ${nombreArchivo} (${tamaño} bytes)`, 'info', 'PUBLICIDAD_BASE64');
+        
+        // Extraer datos de la imagen Base64
+        const matches = imagen.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Formato Base64 inválido' 
+            });
+        }
+        
+        const mimeType = matches[1];
+        const imageData = matches[2];
+        
+        // Validar tipo MIME
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (!allowedTypes.includes(mimeType.toLowerCase())) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Tipo de archivo no permitido: ${mimeType}` 
+            });
+        }
+        
+        logImagen(`✅ Tipo MIME válido: ${mimeType}`, 'success', 'PUBLICIDAD_BASE64');
+        
+        // Convertir Base64 a Buffer
+        const buffer = Buffer.from(imageData, 'base64');
+        
+        // Validar tamaño
+        const maxSize = 5 * 1024 * 1024; // 5MB
+        if (buffer.length > maxSize) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Imagen demasiado grande. Máximo 5MB permitido' 
+            });
+        }
+        
+        logImagen(`📏 Tamaño del buffer: ${buffer.length} bytes`, 'info', 'PUBLICIDAD_BASE64');
+        
+        // Generar nombre único
+        const timestamp = Date.now();
+        const extension = path.extname(nombreArchivo).toLowerCase();
+        const nombreBase = path.basename(nombreArchivo, extension)
+            .replace(/[^a-zA-Z0-9.-]/g, '_')
+            .substring(0, 30);
+        const nombreFinal = `publicidad-${timestamp}-${nombreBase}${extension}`;
+        
+        // Guardar archivo
+        const rutaCompleta = path.join(publicidadPath, nombreFinal);
+        await fs.writeFile(rutaCompleta, buffer);
+        
+        // Verificar que se guardó correctamente
+        const stats = await fs.stat(rutaCompleta);
+        
+        const duration = Date.now() - startTime;
+        logImagen(`✅ Imagen guardada exitosamente (${duration}ms): ${nombreFinal}`, 'success', 'PUBLICIDAD_BASE64');
+        
+        const rutaRelativa = `/showcase/${nombreFinal}`;
+        
+        res.json({ 
+            success: true, 
+            message: 'Imagen de publicidad subida exitosamente',
+            data: {
+                nombreArchivo: nombreFinal,
+                nombreOriginal: nombreArchivo,
+                tamaño: stats.size,
+                ruta: rutaRelativa,
+                tipo: mimeType,
+                tiempoSubida: `${duration}ms`
+            }
+        });
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logImagen(`❌ Error en subida Base64 (${duration}ms): ${error.message}`, 'error', 'PUBLICIDAD_BASE64');
+        
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error interno al procesar la imagen',
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
+    }
+});
+
+
+const subirImagenProductoBase64 = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logImagen('🚀 Iniciando subida de imagen Base64 (producto)', 'info', 'PRODUCTO_BASE64');
+    
+    try {
+        const { imagen, codigo_barra, nombreArchivo, tipoArchivo } = req.body;
+        
+        // Validar datos recibidos
+        if (!imagen || !codigo_barra) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Imagen y código de barra son requeridos' 
+            });
+        }
+        
+        logImagen(`📋 Producto: ${codigo_barra}, Archivo: ${nombreArchivo}`, 'info', 'PRODUCTO_BASE64');
+        
+        // Extraer datos de la imagen Base64
+        const matches = imagen.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Formato Base64 inválido' 
+            });
+        }
+        
+        const mimeType = matches[1];
+        const imageData = matches[2];
+        
+        // Validar tipo MIME
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (!allowedTypes.includes(mimeType.toLowerCase())) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Tipo de archivo no permitido: ${mimeType}` 
+            });
+        }
+        
+        // Convertir Base64 a Buffer
+        const buffer = Buffer.from(imageData, 'base64');
+        
+        // Validar tamaño
+        const maxSize = 5 * 1024 * 1024; // 5MB
+        if (buffer.length > maxSize) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Imagen demasiado grande. Máximo 5MB permitido' 
+            });
+        }
+        
+        // ✅ CONVERTIR A PNG USANDO SHARP
+        logImagen(`🔄 Convirtiendo imagen de producto a PNG...`, 'info', 'PRODUCTO_BASE64');
+        
+        const pngBuffer = await sharp(buffer)
+            .png({
+                quality: 90,
+                compressionLevel: 9,
+                adaptiveFiltering: true
+            })
+            .toBuffer();
+        
+        logImagen(`✅ Imagen convertida a PNG - Nuevo tamaño: ${pngBuffer.length} bytes`, 'success', 'PRODUCTO_BASE64');
+        
+        // Nombre del archivo SIEMPRE con extensión .png
+        const nombreFinal = `${codigo_barra}.png`; // ← SIEMPRE .png
+        
+        // Guardar archivo PNG
+        const rutaCompleta = path.join(productosPath, nombreFinal);
+        await fs.writeFile(rutaCompleta, pngBuffer);
+        
+        // Verificar que se guardó correctamente
+        const stats = await fs.stat(rutaCompleta);
+        
+        const duration = Date.now() - startTime;
+        logImagen(`✅ Imagen PNG de producto guardada exitosamente (${duration}ms): ${nombreFinal}`, 'success', 'PRODUCTO_BASE64');
+        
+        const rutaRelativa = `/images/products/${nombreFinal}`;
+        
+        res.json({ 
+            success: true, 
+            message: 'Imagen de producto subida y convertida a PNG exitosamente',
+            data: {
+                codigoBarra: codigo_barra,
+                nombreArchivo: nombreFinal,
+                tamaño: stats.size,
+                tamañoOriginal: buffer.length,
+                ruta: rutaRelativa,
+                tipoOriginal: mimeType,
+                tipoFinal: 'image/png',
+                tiempoSubida: `${duration}ms`
+            }
+        });
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logImagen(`❌ Error en subida Base64 producto (${duration}ms): ${error.message}`, 'error', 'PRODUCTO_BASE64');
+        
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error interno al procesar la imagen del producto',
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
+    }
+});
+
+
+
 // ==============================================
 // EXPORTAR CONTROLADORES
 // ==============================================
@@ -694,5 +910,8 @@ module.exports = {
     // Productos
     subirImagenProducto,
     verificarImagenProducto,
-    eliminarImagenProducto
+    eliminarImagenProducto,
+
+    subirImagenPublicidadBase64,
+    subirImagenProductoBase64
 };

@@ -1036,7 +1036,22 @@ const nuevoPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Insertar pedido principal (tu código existente)
+        // ✅ VALIDAR Y NORMALIZAR productos antes de insertar
+        const productosNormalizados = productos.map(producto => ({
+            codigo_barra: producto.codigo_barra || '',
+            cod_interno: producto.cod_interno || producto.codInterno || 0, // ✅ Normalizar aquí
+            nombre_producto: producto.nombre_producto || '',
+            cantidad: producto.cantidad || 1,
+            precio: producto.precio || 0
+        }));
+
+        // ✅ LOG para debugging
+        if (process.env.NODE_ENV === 'development') {
+            logController(`📦 Productos normalizados:`, 'info', 'PEDIDOS');
+            console.log(JSON.stringify(productosNormalizados, null, 2));
+        }
+
+        // Insertar pedido principal
         const insertPedidoQuery = `
             INSERT INTO pedidos (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local)
             VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1056,21 +1071,20 @@ const nuevoPedido = asyncHandler(async (req, res) => {
         const pedidoResult = await executeQuery(insertPedidoQuery, pedidoValues, 'INSERT_PEDIDO');
         const pedidoId = pedidoResult.insertId;
 
-        // --- INICIO DE LA MODIFICACIÓN PARA INSERTAR PRODUCTOS ---
-        if (productos && productos.length > 0) {
-            // Cambiar a 6 valores por producto (agregando cod_interno)
-            const valuePlaceholders = productos.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+        // ✅ INSERTAR PRODUCTOS - Usar productosNormalizados
+        if (productosNormalizados && productosNormalizados.length > 0) {
+            const valuePlaceholders = productosNormalizados.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
             
             const insertProductoQuery = `
                 INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio)
                 VALUES ${valuePlaceholders}
             `;
 
-            const flattenedProductosValues = productos.reduce((acc, producto) => {
+            const flattenedProductosValues = productosNormalizados.reduce((acc, producto) => {
                 acc.push(
                     pedidoId,
                     producto.codigo_barra,
-                    producto.cod_interno,  // ← NUEVO CAMPO
+                    producto.cod_interno,  // ✅ Ya normalizado
                     producto.nombre_producto,
                     producto.cantidad,
                     producto.precio
@@ -1078,9 +1092,15 @@ const nuevoPedido = asyncHandler(async (req, res) => {
                 return acc;
             }, []);
 
+            // ✅ LOG de valores finales antes de insertar
+            if (process.env.NODE_ENV === 'development') {
+                logController(`📝 Valores para inserción:`, 'info', 'PEDIDOS');
+                console.log('Query:', insertProductoQuery);
+                console.log('Values:', flattenedProductosValues);
+            }
+
             await executeQuery(insertProductoQuery, flattenedProductosValues, 'INSERT_PRODUCTOS_PEDIDO');
         }
-        // --- FIN DE LA MODIFICACIÓN ---
 
         logController(`✅ Pedido creado exitosamente - ID: ${pedidoId}, Cliente: ${cliente}`, 'success', 'PEDIDOS');
         res.json({ success: true, message: 'Pedido creado correctamente', pedido_id: pedidoId, timestamp: new Date().toISOString() });
