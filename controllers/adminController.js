@@ -490,83 +490,97 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
         }
 
         // 4. SI EL NUEVO ESTADO ES "entregado", INSERTAR EN TABLAS DE CARRITO
+        let insertadoEnCarrito = false;
         if (estado.toLowerCase() === 'entregado') {
-            logAdmin(`Insertando pedido ${pedidoId} en historial de carrito`, 'info', 'CARRITO');
+            logAdmin(`Verificando si pedido ${pedidoId} ya existe en carrito`, 'info', 'CARRITO');
             
-            // 4.1. Insertar en tabla carrito
-            const [carritoInsert] = await connection.execute(`
-                INSERT INTO carrito (
-                    idcarrito, 
-                    status, 
-                    id_cliente, 
-                    cantidad, 
-                    Total, 
-                    fecha, 
-                    cli_nombre, 
-                    cli_direccion, 
-                    cli_tel, 
-                    cli_email, 
-                    medio_pago, 
-                    data_pago
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [
-                pedidoActual.id_pedido,           // idcarrito (usamos el ID del pedido)
-                3,                                // status (3 para completado)
-                pedidoActual.email_cliente,       // id_cliente (usamos email como ID)
-                pedidoActual.cantidad_productos,  // cantidad
-                pedidoActual.monto_total,         // Total
-                pedidoActual.fecha,               // fecha
-                pedidoActual.cliente,             // cli_nombre
-                pedidoActual.direccion_cliente,   // cli_direccion
-                pedidoActual.telefono_cliente,    // cli_tel
-                pedidoActual.email_cliente,       // cli_email
-                pedidoActual.medio_pago,          // medio_pago
-                ''                                // data_pago (vacío por ahora)
-            ]);
-
-            if (carritoInsert.affectedRows === 0) {
-                await connection.rollback();
-                return res.status(500).json({ 
-                    success: false,
-                    error: 'Error al insertar en tabla carrito',
-                    timestamp: new Date().toISOString()
-                });
-            }
-
-            // 4.2. Obtener productos del pedido para insertar en carrito_cont
-            const [productosResult] = await connection.execute(`
-                SELECT * FROM pedidos_contenido WHERE id_pedido = ?
+            // 🆕 VERIFICAR SI YA EXISTE EN CARRITO (EVITAR DUPLICADOS)
+            const [carritoExistente] = await connection.execute(`
+                SELECT idcarrito FROM carrito WHERE idcarrito = ?
             `, [pedidoId]);
 
-            // 4.3. Insertar cada producto en carrito_cont
-            for (const producto of productosResult) {
-                const [contInsert] = await connection.execute(`
-                    INSERT INTO carrito_cont (
+            if (carritoExistente.length > 0) {
+                logAdmin(`⚠️ Pedido ${pedidoId} YA EXISTE en carrito - omitiendo inserción`, 'warn', 'CARRITO');
+                insertadoEnCarrito = false; // Ya existía
+            } else {
+                logAdmin(`✅ Insertando pedido ${pedidoId} en historial de carrito`, 'info', 'CARRITO');
+                
+                // 4.1. Insertar en tabla carrito
+                const [carritoInsert] = await connection.execute(`
+                    INSERT INTO carrito (
                         idcarrito, 
-                        cod_interno, 
-                        codigo_barra, 
+                        status, 
+                        id_cliente, 
                         cantidad, 
-                        precio
-                    ) VALUES (?, ?, ?, ?, ?)
+                        Total, 
+                        fecha, 
+                        cli_nombre, 
+                        cli_direccion, 
+                        cli_tel, 
+                        cli_email, 
+                        medio_pago, 
+                        data_pago
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
-                    pedidoActual.id_pedido,           // idcarrito (referencia al carrito padre)
-                    producto.cod_interno || 0,        // cod_interno (0 si es NULL)
-                    producto.codigo_barra,            // codigo_barra
-                    producto.cantidad,                // cantidad
-                    producto.precio                   // precio
+                    pedidoActual.id_pedido,           // idcarrito (usamos el ID del pedido)
+                    3,                                // status (3 para completado)
+                    pedidoActual.email_cliente,       // id_cliente (usamos email como ID)
+                    pedidoActual.cantidad_productos,  // cantidad
+                    pedidoActual.monto_total,         // Total
+                    pedidoActual.fecha,               // fecha
+                    pedidoActual.cliente,             // cli_nombre
+                    pedidoActual.direccion_cliente,   // cli_direccion
+                    pedidoActual.telefono_cliente,    // cli_tel
+                    pedidoActual.email_cliente,       // cli_email
+                    pedidoActual.medio_pago,          // medio_pago
+                    ''                                // data_pago (vacío por ahora)
                 ]);
 
-                if (contInsert.affectedRows === 0) {
+                if (carritoInsert.affectedRows === 0) {
                     await connection.rollback();
                     return res.status(500).json({ 
                         success: false,
-                        error: `Error al insertar producto ${producto.nombre_producto} en carrito_cont`,
+                        error: 'Error al insertar en tabla carrito',
                         timestamp: new Date().toISOString()
                     });
                 }
-            }
 
-            logAdmin(`✅ Pedido ${pedidoId} insertado en carrito con ${productosResult.length} productos`, 'success', 'CARRITO');
+                // 4.2. Obtener productos del pedido para insertar en carrito_cont
+                const [productosResult] = await connection.execute(`
+                    SELECT * FROM pedidos_contenido WHERE id_pedido = ?
+                `, [pedidoId]);
+
+                // 4.3. Insertar cada producto en carrito_cont
+                for (const producto of productosResult) {
+                    const [contInsert] = await connection.execute(`
+                        INSERT INTO carrito_cont (
+                            idcarrito, 
+                            cod_interno, 
+                            codigo_barra, 
+                            cantidad, 
+                            precio
+                        ) VALUES (?, ?, ?, ?, ?)
+                    `, [
+                        pedidoActual.id_pedido,           // idcarrito (referencia al carrito padre)
+                        producto.cod_interno || 0,        // cod_interno (0 si es NULL)
+                        producto.codigo_barra,            // codigo_barra
+                        producto.cantidad,                // cantidad
+                        producto.precio                   // precio
+                    ]);
+
+                    if (contInsert.affectedRows === 0) {
+                        await connection.rollback();
+                        return res.status(500).json({ 
+                            success: false,
+                            error: `Error al insertar producto ${producto.nombre_producto} en carrito_cont`,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                }
+
+                logAdmin(`✅ Pedido ${pedidoId} insertado en carrito con ${productosResult.length} productos`, 'success', 'CARRITO');
+                insertadoEnCarrito = true;
+            }
         }
 
         // 5. Confirmar toda la transacción
@@ -575,7 +589,9 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
         const response = {
             success: true,
             message: estado.toLowerCase() === 'entregado' 
-                ? `Pedido marcado como entregado e insertado en historial de ventas`
+                ? insertadoEnCarrito 
+                    ? `Pedido marcado como entregado e insertado en historial de ventas`
+                    : `Pedido marcado como entregado (ya existía en historial)`
                 : `Estado del pedido actualizado de '${estadoAnterior}' a '${estado}'`,
             data: {
                 pedido_id: pedidoId,
@@ -583,7 +599,8 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                 estado_anterior: estadoAnterior,
                 estado_nuevo: estado,
                 notas: notas || null,
-                insertado_en_carrito: estado.toLowerCase() === 'entregado',
+                insertado_en_carrito: insertadoEnCarrito,
+                ya_existia_en_carrito: estado.toLowerCase() === 'entregado' && !insertadoEnCarrito,
                 fecha_actualizacion: new Date().toISOString()
             },
             timestamp: new Date().toISOString()
