@@ -151,27 +151,35 @@ const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutos
 
 // Configuración de límites por tipo de endpoint
 const RATE_LIMITS = {
-    // Navegación general - muy permisivo
-    general: {
-        max: 5000,  // 5000 requests por 15 minutos (≈5.5 requests/segundo)
-        routes: ['/store/productos', '/store/categorias', '/store/buscar', '/store/ofertas', '/store/destacados']
-    },
-    // Imágenes - muy permisivo para carga de productos
-    images: {
-        max: 3000,  // 3000 requests por 15 minutos
-        routes: ['/images/', '/showcase/', '/store/imagen-producto']
-    },
-    // Carrito y checkout - moderado
-    cart: {
-        max: 1000,  // 1000 requests por 15 minutos
-        routes: ['/store/carrito', '/store/checkout', '/store/calcular-envio']
-    },
-    // Operaciones sensibles - más restrictivo
-    sensitive: {
-        max: 200,   // 200 requests por 15 minutos
-        routes: ['/store/pedido', '/store/pago', '/store/email']
-    }
-    
+  // Navegación general - muy permisivo
+  general: {
+    max: 5000,
+    routes: ['/store/productos', '/store/categorias', '/store/buscar', '/store/ofertas', '/store/destacados']
+  },
+  
+  // 🆕 MONITOREO - Extremadamente permisivo para polling
+  monitoring: {
+    max: 10000,  // 10000 requests por 15 minutos (≈11 requests/segundo)
+    routes: ['/admin/pedidos-pendientes-check']
+  },
+  
+  // Imágenes - muy permisivo
+  images: {
+    max: 3000,
+    routes: ['/images/', '/showcase/', '/store/imagen-producto']
+  },
+  
+  // Carrito y checkout - moderado
+  cart: {
+    max: 1000,
+    routes: ['/store/carrito', '/store/checkout', '/store/calcular-envio']
+  },
+  
+  // Operaciones sensibles - más restrictivo
+  sensitive: {
+    max: 200,
+    routes: ['/store/pedido', '/store/pago', '/store/email']
+  }
 };
 
 // Función para determinar el tipo de endpoint
