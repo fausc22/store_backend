@@ -549,7 +549,11 @@ const obtenerCategorias = asyncHandler(async (req, res) => {
     }
 });
 
-// ARTÍCULOS CHECKOUT OPTIMIZADO
+
+// ============================================
+// FUNCIÓN MEJORADA: articulosCheckout
+// ============================================
+
 const articulosCheckout = asyncHandler(async (req, res) => {
     const startTime = Date.now();
     const cartCodes = req.query.cartCodes ? req.query.cartCodes.split(',') : [];
@@ -559,51 +563,99 @@ const articulosCheckout = asyncHandler(async (req, res) => {
     try {
         const precioColumn = getPrecioColumn();
         
+        // Si no hay productos en el carrito, devolver destacados/ofertas
         if (cartCodes.length === 0) {
             const fallbackQuery = `
                 SELECT 
-                    CODIGO_BARRA,
-                    COD_INTERNO,
-                    COD_IVA,
+                    a.CODIGO_BARRA,
+                    a.COD_INTERNO,
+                    a.COD_IVA,
                     CASE 
-                        WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
-                        WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
-                        WHEN COD_IVA = 2 THEN precio_sin_iva_4
-                        ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                        ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
                     END AS PRECIO,
-                    COSTO,
-                    porc_impint,
-                    COD_DPTO,
-                    PESABLE,
-                    STOCK,
-                    art_desc_vta
-                FROM articulo 
-                WHERE HABILITADO = 'S'
+                    a.COSTO,
+                    a.porc_impint,
+                    a.COD_DPTO,
+                    a.PESABLE,
+                    a.STOCK,
+                    a.art_desc_vta,
+                    at.CODIGO_BARRA as es_oferta_destacado
+                FROM articulo a
+                LEFT JOIN articulo_temp at ON a.CODIGO_BARRA = at.CODIGO_BARRA AND at.activo = 1
+                WHERE a.HABILITADO = 'S'
+                AND a.STOCK >= a.STOCK_MIN
                 AND (
                     CASE 
-                        WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
-                        WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
-                        WHEN COD_IVA = 2 THEN precio_sin_iva_4
-                        ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                        ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
                     END
                 ) > 0
-                ORDER BY RAND()
-                LIMIT 6
+                ORDER BY 
+                    CASE WHEN es_oferta_destacado IS NOT NULL THEN 0 ELSE 1 END,
+                    RAND()
+                LIMIT 8
             `;
             
-            const results = await executeQuery(fallbackQuery, [], 'CHECKOUT_RANDOM');
+            const results = await executeQuery(fallbackQuery, [], 'CHECKOUT_FALLBACK');
             
             const duration = Date.now() - startTime;
-            logController(`✅ ${results.length} productos aleatorios para checkout (${duration}ms)`, 'success', 'CHECKOUT');
+            logController(`✅ ${results.length} productos fallback para checkout (${duration}ms)`, 'success', 'CHECKOUT');
             
             return res.json(results);
         }
 
-        const placeholders1 = cartCodes.map(() => '?').join(',');
-        const placeholders2 = cartCodes.map(() => '?').join(',');
-
+        // ============================================
+        // ESTRATEGIA AVANZADA CON SCORING
+        // ============================================
+        
+        const placeholders = cartCodes.map(() => '?').join(',');
+        
         const smartQuery = `
-            SELECT DISTINCT
+            WITH cart_analysis AS (
+                -- Analizar el carrito: categorías, marcas y palabras clave
+                SELECT 
+                    a.COD_DPTO,
+                    c.NOM_CLASIF as categoria_nombre,
+                    a.art_desc_vta,
+                    -- Extraer las primeras 3 palabras del nombre (suelen ser marca/tipo)
+                    SUBSTRING_INDEX(a.art_desc_vta, ' ', 3) as palabras_clave,
+                    -- Extraer primera palabra (suele ser la marca)
+                    SUBSTRING_INDEX(a.art_desc_vta, ' ', 1) as primera_palabra,
+                    a.CODIGO_BARRA
+                FROM articulo a
+                LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+                WHERE a.CODIGO_BARRA IN (${placeholders})
+                AND a.HABILITADO = 'S'
+            ),
+            category_scores AS (
+                -- Puntaje por categorías frecuentes en el carrito
+                SELECT 
+                    COD_DPTO,
+                    categoria_nombre,
+                    COUNT(*) as frecuencia,
+                    -- Mayor peso a categorías más presentes
+                    COUNT(*) * 10 as puntaje_categoria
+                FROM cart_analysis
+                GROUP BY COD_DPTO, categoria_nombre
+            ),
+            keyword_scores AS (
+                -- Puntaje por palabras clave (marcas, tipos de producto)
+                SELECT 
+                    primera_palabra,
+                    palabras_clave,
+                    COUNT(*) as frecuencia,
+                    -- Puntaje alto para coincidencias exactas
+                    COUNT(*) * 8 as puntaje_palabra
+                FROM cart_analysis
+                GROUP BY primera_palabra, palabras_clave
+            )
+            
+            SELECT 
                 a.CODIGO_BARRA,
                 a.COD_INTERNO,
                 a.COD_IVA,
@@ -619,17 +671,81 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                 a.PESABLE,
                 a.STOCK,
                 a.art_desc_vta,
-                c.NOM_CLASIF as categoria_nombre
+                c.NOM_CLASIF as categoria_nombre,
+                -- ✅ INCLUIR COLUMNAS DEL ORDER BY
+                at.CODIGO_BARRA as es_oferta_destacado,
+                
+                -- ============================================
+                -- SISTEMA DE SCORING INTELIGENTE
+                -- ============================================
+                (
+                    -- 1. CATEGORÍA: Productos de misma categoría (+10 pts por frecuencia)
+                    COALESCE((
+                        SELECT cs.puntaje_categoria 
+                        FROM category_scores cs 
+                        WHERE cs.COD_DPTO = a.COD_DPTO
+                    ), 0)
+                    
+                    -- 2. MARCA/PALABRA INICIAL: Primera palabra coincide (+16 pts por frecuencia)
+                    + COALESCE((
+                        SELECT ks.puntaje_palabra * 2
+                        FROM keyword_scores ks 
+                        WHERE a.art_desc_vta LIKE CONCAT(ks.primera_palabra, '%')
+                    ), 0)
+                    
+                    -- 3. PALABRAS CLAVE: Coincidencia en las primeras palabras (+8 pts)
+                    + COALESCE((
+                        SELECT ks.puntaje_palabra
+                        FROM keyword_scores ks 
+                        WHERE a.art_desc_vta LIKE CONCAT('%', ks.palabras_clave, '%')
+                    ), 0)
+                    
+                    -- 4. OFERTAS/DESTACADOS: Priorizar productos especiales (+20 pts)
+                    + CASE WHEN at.CODIGO_BARRA IS NOT NULL THEN 20 ELSE 0 END
+                    
+                    -- 5. DISPONIBILIDAD: Mayor stock = más relevante (+5 pts si stock > 10)
+                    + CASE WHEN a.STOCK > 10 THEN 5 ELSE 0 END
+                    
+                    -- 6. RANGO DE PRECIO: Similar al promedio del carrito (+10 pts)
+                    + CASE 
+                        WHEN (
+                            SELECT AVG(
+                                CASE 
+                                    WHEN cart.COD_IVA = 0 THEN round(cart.precio_sin_iva_4 * 1.21, 2)
+                                    WHEN cart.COD_IVA = 1 THEN round(cart.precio_sin_iva_4 * 1.105, 2)
+                                    WHEN cart.COD_IVA = 2 THEN cart.precio_sin_iva_4
+                                    ELSE round(cart.precio_sin_iva_4 * 1.21, 2)
+                                END
+                            )
+                            FROM articulo cart 
+                            WHERE cart.CODIGO_BARRA IN (${placeholders})
+                        ) BETWEEN 
+                            (CASE 
+                                WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2)
+                                WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2)
+                                WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                                ELSE round(a.precio_sin_iva_4 * 1.21, 2)
+                            END) * 0.5 
+                            AND 
+                            (CASE 
+                                WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2)
+                                WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2)
+                                WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                                ELSE round(a.precio_sin_iva_4 * 1.21, 2)
+                            END) * 2
+                        THEN 10 
+                        ELSE 0 
+                      END
+                    
+                ) as relevancia_score
+                
             FROM articulo a
             LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+            LEFT JOIN articulo_temp at ON a.CODIGO_BARRA = at.CODIGO_BARRA AND at.activo = 1
+            
             WHERE a.HABILITADO = 'S'
-            AND a.CODIGO_BARRA NOT IN (${placeholders1})
-            AND a.COD_DPTO IN (
-                SELECT DISTINCT COD_DPTO 
-                FROM articulo 
-                WHERE CODIGO_BARRA IN (${placeholders2}) 
-                AND HABILITADO = 'S'
-            )
+            AND a.CODIGO_BARRA NOT IN (${placeholders})  -- Excluir productos ya en carrito
+            AND a.STOCK >= a.STOCK_MIN
             AND (
                 CASE 
                     WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
@@ -638,51 +754,80 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                     ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
                 END
             ) > 0
-            AND STOCK >= STOCK_MIN
-            ORDER BY RAND()
-            LIMIT 6
+            
+            -- ============================================
+            -- ORDENAMIENTO POR RELEVANCIA
+            -- ============================================
+            ORDER BY 
+                relevancia_score DESC,  -- Primero: productos más relevantes
+                CASE WHEN es_oferta_destacado IS NOT NULL THEN 0 ELSE 1 END,  -- Segundo: ofertas/destacados
+                a.STOCK DESC,  -- Tercero: mayor disponibilidad
+                RAND()  -- Cuarto: variedad aleatoria
+            
+            LIMIT 8
         `;
 
-        const queryParams = [...cartCodes, ...cartCodes];
+        // Duplicar parámetros para todas las apariciones en la query
+        const queryParams = [
+            ...cartCodes,  // Para cart_analysis
+            ...cartCodes,  // Para precio promedio
+            ...cartCodes   // Para exclusión
+        ];
+        
         const results = await executeQuery(smartQuery, queryParams, 'CHECKOUT_SMART');
         
         const duration = Date.now() - startTime;
-        logController(`✅ ${results.length} productos relacionados para checkout (${duration}ms)`, 'success', 'CHECKOUT');
+        
+        // Log detallado de scoring (solo en desarrollo)
+        if (process.env.NODE_ENV === 'development' && results.length > 0) {
+            logController(`📊 Top 3 productos por relevancia:`, 'info', 'CHECKOUT');
+            results.slice(0, 3).forEach((product, index) => {
+                console.log(`   ${index + 1}. ${product.art_desc_vta} - Score: ${product.relevancia_score}`);
+            });
+        }
+        
+        logController(`✅ ${results.length} productos relacionados inteligentes (${duration}ms)`, 'success', 'CHECKOUT');
         
         res.json(results);
+        
     } catch (error) {
         logController(`❌ Error obteniendo productos checkout: ${error.message}`, 'error', 'CHECKOUT');
         
-        // Fallback en caso de error
+        // Fallback mejorado en caso de error
         try {
-            const fallbackQuery = `
+            const simpleFallbackQuery = `
                 SELECT 
-                    CODIGO_BARRA,
-                    COD_INTERNO,
-                    COD_IVA,
+                    a.CODIGO_BARRA,
+                    a.COD_INTERNO,
+                    a.COD_IVA,
                     CASE 
-                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
-                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
-                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
-                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                        ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
                     END AS PRECIO,
-                    COSTO,
-                    porc_impint,
-                    COD_DPTO,
-                    PESABLE,
-                    STOCK,
-                    art_desc_vta
-                FROM articulo 
-                WHERE HABILITADO = 'S'
-                ORDER BY RAND()
-                LIMIT 6
+                    a.COSTO,
+                    a.porc_impint,
+                    a.COD_DPTO,
+                    a.PESABLE,
+                    a.STOCK,
+                    a.art_desc_vta,
+                    at.CODIGO_BARRA as es_oferta_destacado
+                FROM articulo a
+                LEFT JOIN articulo_temp at ON a.CODIGO_BARRA = at.CODIGO_BARRA AND at.activo = 1
+                WHERE a.HABILITADO = 'S'
+                AND a.STOCK >= a.STOCK_MIN
+                ORDER BY 
+                    CASE WHEN es_oferta_destacado IS NOT NULL THEN 0 ELSE 1 END,
+                    RAND()
+                LIMIT 8
             `;
             
-            const fallbackResults = await executeQuery(fallbackQuery, [], 'CHECKOUT_FALLBACK');
-            logController(`✅ Fallback: ${fallbackResults.length} productos aleatorios`, 'success', 'CHECKOUT');
+            const fallbackResults = await executeQuery(simpleFallbackQuery, [], 'CHECKOUT_ERROR_FALLBACK');
+            logController(`✅ Fallback de error: ${fallbackResults.length} productos aleatorios`, 'success', 'CHECKOUT');
             res.json(fallbackResults);
         } catch (fallbackError) {
-            logController(`❌ Error en fallback checkout: ${fallbackError.message}`, 'error', 'CHECKOUT');
+            logController(`❌ Error crítico en fallback checkout: ${fallbackError.message}`, 'error', 'CHECKOUT');
             res.status(500).json({ 
                 error: 'Error obteniendo productos para checkout',
                 timestamp: new Date().toISOString()

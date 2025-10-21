@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Ticket de Venta</title>
+	<meta charset="UTF-8">
+	<style type="text/css">
+		* {
+			box-sizing: border-box;
+			-webkit-user-select: none;
+			-moz-user-select: none;
+			-ms-user-select: none;
+			user-select: none;
+		}
+
+		body {
+			margin: 0;
+			padding: 10px;
+			font-family: 'Courier New', monospace;
+			background: white;
+		}
+
+		.bill-container {
+			max-width: 8cm;
+			margin: 0 auto;
+			font-size: 12px;
+			line-height: 1.4;
+		}
+
+		.text-lg {
+			font-size: 18px;
+			font-weight: bold;
+		}
+
+		.text-md {
+			font-size: 14px;
+			font-weight: bold;
+		}
+
+		.text-center {
+			text-align: center;
+		}
+
+		.text-right {
+			text-align: right;
+		}
+
+		p {
+			margin: 2px 0;
+		}
+
+		.section {
+			padding: 8px 0;
+		}
+
+		.border-top {
+			border-top: 1px dashed #000;
+			padding-top: 8px;
+		}
+
+		.border-bottom {
+			border-bottom: 1px dashed #000;
+			padding-bottom: 8px;
+		}
+
+		table {
+			width: 100%;
+			border-collapse: collapse;
+		}
+
+		.productos-table {
+			margin: 5px 0;
+		}
+
+		.productos-table tr {
+			border-bottom: 1px dotted #ccc;
+		}
+
+		.productos-table tr:last-child {
+			border-bottom: none;
+		}
+
+		.productos-table td {
+			padding: 4px 2px;
+			vertical-align: top;
+		}
+
+		.col-cant {
+			width: 30px;
+			text-align: center;
+		}
+
+		.col-nombre {
+			width: auto;
+			padding-left: 5px;
+			padding-right: 5px;
+		}
+
+		.col-precio {
+			width: 70px;
+			text-align: right;
+			white-space: nowrap;
+		}
+
+		.totales-table {
+			margin-top: 8px;
+		}
+
+		.totales-table td {
+			padding: 3px 0;
+		}
+
+		.totales-table td:first-child {
+			font-weight: bold;
+		}
+
+		.totales-table td:last-child {
+			text-align: right;
+		}
+
+		.total-final {
+			font-size: 16px;
+			font-weight: bold;
+			padding-top: 5px !important;
+			border-top: 2px solid #000;
+		}
+
+		.header-info p {
+			margin: 1px 0;
+		}
+
+		.footer {
+			margin-top: 15px;
+			padding-top: 10px;
+			border-top: 1px dashed #000;
+		}
+
+		.qr-container {
+			text-align: center;
+			margin: 10px 0;
+		}
+
+		.fecha-hora {
+			font-size: 11px;
+			color: #666;
+		}
+
+		@media print {
+			body {
+				padding: 0;
+			}
+			
+			.bill-container {
+				width: 8cm;
+			}
+		}
+	</style>
+</head>
+<body>
+	<div class="bill-container">
+		<!-- HEADER -->
+		<div class="section text-center header-info">
+			<p class="text-lg">{{store_name}}</p>
+			<p>{{store_address}}</p>
+			<p>Tel: {{store_phone}}</p>
+			<p>{{store_email}}</p>
+		</div>
+
+		<!-- INFO PEDIDO -->
+		<div class="section border-top border-bottom text-center">
+			<p class="text-md">TICKET DE VENTA</p>
+			<p>Pedido N°: {{pedido_id}}</p>
+			<p class="fecha-hora">{{fecha}} - {{hora}}</p>
+		</div>
+
+		<!-- DATOS CLIENTE -->
+		<div class="section border-bottom">
+			<p class="text-md">DATOS DEL CLIENTE</p>
+			<p>Nombre: {{client_name}}</p>
+			<p>Dirección: {{client_address}}</p>
+			<p>Teléfono: {{client_phone}}</p>
+			<p>Email: {{client_email}}</p>
+		</div>
+
+		<!-- PRODUCTOS -->
+		<div class="section border-bottom">
+			<p class="text-md text-center">DETALLE DE PRODUCTOS</p>
+			<table class="productos-table">
+				<thead>
+					<tr style="border-bottom: 2px solid #000;">
+						<td class="col-cant"><strong>Cant</strong></td>
+						<td class="col-nombre"><strong>Producto</strong></td>
+						<td class="col-precio"><strong>Subtotal</strong></td>
+					</tr>
+				</thead>
+				<tbody>
+					{{productos_rows}}
+				</tbody>
+			</table>
+		</div>
+
+		<!-- TOTALES -->
+		<div class="section">
+			<table class="totales-table">
+				<tr>
+					<td>SUBTOTAL:</td>
+					<td>$ {{subtotal}}</td>
+				</tr>
+				<tr>
+					<td>COSTO ENVÍO:</td>
+					<td>$ {{costo_envio}}</td>
+				</tr>
+				<tr class="total-final">
+					<td>TOTAL:</td>
+					<td>$ {{total}}</td>
+				</tr>
+			</table>
+		</div>
+
+		<!-- MÉTODO DE PAGO -->
+		<div class="section border-top">
+			<p><strong>Método de Pago:</strong> {{medio_pago}}</p>
+			<p><strong>Estado:</strong> {{estado}}</p>
+		</div>
+
+		<!-- NOTAS (SI EXISTEN) -->
+		{{notas_section}}
+
+		<!-- FOOTER -->
+		<div class="footer text-center">
+			<p class="text-md">¡GRACIAS POR SU COMPRA!</p>
+			<p>{{store_name}}</p>
+			<p>Visitanos en {{store_instagram}}</p>
+		</div>
+
+		<!-- QR CODE (OPCIONAL) -->
+		<div class="qr-container">
+			<div id="qrcode"></div>
+		</div>
+	</div>
+
+	<!-- Script para generar QR si se necesita -->
+	<script>
+		// Aquí podrías agregar lógica para generar QR
+		// Por ejemplo, usando una librería como qrcode.js
+	</script>
+</body>
+</html>

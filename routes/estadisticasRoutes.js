@@ -7,7 +7,8 @@ const {
     obtenerEstadisticasCompletas,
     obtenerMetricasRapidas,
     compararPeriodos,
-    obtenerEstadisticasProducto
+    obtenerEstadisticasProducto,
+    obtenerEstadisticasProductosEspeciales // ✅ AGREGAR ESTA IMPORTACIÓN
 } = require('../controllers/estadisticaController');
 
 // ==============================================
@@ -156,6 +157,20 @@ router.get('/producto/:codigoBarra',
     obtenerEstadisticasProducto
 );
 
+/**
+ * @route   GET /api/estadisticas/productos-especiales
+ * @desc    Obtener estadísticas de productos especiales (Ofertas, Destacados, Liquidación)
+ * @access  Private (requiere autenticación admin)
+ * @params  fechaInicio (opcional) - Formato: YYYY-MM-DD
+ *          fechaFin (opcional) - Formato: YYYY-MM-DD
+ * @example GET /api/estadisticas/productos-especiales?fechaInicio=2024-01-01&fechaFin=2024-12-31
+ */
+router.get('/productos-especiales', // ✅ NUEVA RUTA
+    logAccesoEstadisticas,
+    validarFechas,
+    obtenerEstadisticasProductosEspeciales
+);
+
 // ==============================================
 // RUTAS ADICIONALES ÚTILES
 // ==============================================
@@ -207,6 +222,12 @@ router.get('/info', logAccesoEstadisticas, (req, res) => {
                 description: 'Estadísticas de un producto específico',
                 parameters: ['codigoBarra', 'fechaInicio?', 'fechaFin?'],
                 example: '/api/estadisticas/producto/1234567890123?fechaInicio=2024-01-01&fechaFin=2024-12-31'
+            },
+            '/productos-especiales': { // ✅ AGREGAR A LA DOCUMENTACIÓN
+                method: 'GET',
+                description: 'Estadísticas de productos especiales (Ofertas, Destacados, Liquidación)',
+                parameters: ['fechaInicio?', 'fechaFin?'],
+                example: '/api/estadisticas/productos-especiales?fechaInicio=2024-01-01&fechaFin=2024-12-31'
             }
         },
         timestamp: new Date().toISOString()
@@ -226,6 +247,7 @@ router.use('*', (req, res) => {
             '/api/estadisticas/rapidas',
             '/api/estadisticas/comparar',
             '/api/estadisticas/producto/:codigoBarra',
+            '/api/estadisticas/productos-especiales', // ✅ AGREGAR
             '/api/estadisticas/health',
             '/api/estadisticas/info'
         ],

@@ -86,6 +86,81 @@ const calcularMetricasAdicionales = (datosBase) => {
     };
 };
 
+
+// Función helper para obtener datos de productos especiales
+    const obtenerDatosProductosEspeciales = async (filtro) => {
+        const [ofertas, destacados, liquidacion, ventasTotales] = await Promise.all([
+            executeQuery(
+                `SELECT at.CODIGO_BARRA as codigo_barra, at.art_desc_vta as nombre, COALESCE(a.STOCK, 0) as stock,
+                COALESCE(SUM(pc.cantidad), 0) as total_vendido, COALESCE(SUM(pc.subtotal), 0) as ingresos
+                FROM articulo_temp at
+                LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                WHERE at.cat = '1' AND at.activo = 1
+                GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                ORDER BY total_vendido DESC`,
+                filtro.params, 'HELPER_OFERTAS'
+            ),
+            executeQuery(
+                `SELECT at.CODIGO_BARRA as codigo_barra, at.art_desc_vta as nombre, COALESCE(a.STOCK, 0) as stock,
+                COALESCE(SUM(pc.cantidad), 0) as total_vendido, COALESCE(SUM(pc.subtotal), 0) as ingresos
+                FROM articulo_temp at
+                LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                WHERE at.cat = '2' AND at.activo = 1
+                GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                ORDER BY total_vendido DESC`,
+                filtro.params, 'HELPER_DESTACADOS'
+            ),
+            executeQuery(
+                `SELECT at.CODIGO_BARRA as codigo_barra, at.art_desc_vta as nombre, COALESCE(a.STOCK, 0) as stock,
+                COALESCE(SUM(pc.cantidad), 0) as total_vendido, COALESCE(SUM(pc.subtotal), 0) as ingresos
+                FROM articulo_temp at
+                LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                WHERE at.cat = '3' AND at.activo = 1
+                GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                ORDER BY total_vendido DESC`,
+                filtro.params, 'HELPER_LIQUIDACION'
+            ),
+            executeQuery(
+                `SELECT COALESCE(SUM(cantidad_productos), 0) as total_vendido FROM pedidos p ${filtro.whereClause}`,
+                filtro.params, 'HELPER_TOTALES'
+            )
+        ]);
+
+        const calcularResumen = (productos) => ({
+            cantidad_productos: productos.length,
+            total_vendido: productos.reduce((s, p) => s + (parseInt(p.total_vendido) || 0), 0),
+            ingresos: Math.round(productos.reduce((s, p) => s + (parseFloat(p.ingresos) || 0), 0) * 100) / 100,
+            ticket_promedio: productos.length > 0 ? Math.round((productos.reduce((s, p) => s + (parseFloat(p.ingresos) || 0), 0) / productos.reduce((s, p) => s + (parseInt(p.total_vendido) || 0), 0)) * 100) / 100 : 0,
+            productos: productos
+        });
+
+        const resumenOfertas = calcularResumen(ofertas);
+        const resumenDestacados = calcularResumen(destacados);
+        const resumenLiquidacion = calcularResumen(liquidacion);
+
+        const totalVendidoEspeciales = resumenOfertas.total_vendido + resumenDestacados.total_vendido + resumenLiquidacion.total_vendido;
+        const totalVendidoGeneral = ventasTotales[0]?.total_vendido || 0;
+        const porcentajeDelTotal = totalVendidoGeneral > 0 ? ((totalVendidoEspeciales / totalVendidoGeneral) * 100).toFixed(1) : 0;
+
+        return {
+            resumen: {
+                total_productos: ofertas.length + destacados.length + liquidacion.length,
+                total_vendido: totalVendidoEspeciales,
+                ingresos_totales: Math.round((resumenOfertas.ingresos + resumenDestacados.ingresos + resumenLiquidacion.ingresos) * 100) / 100,
+                porcentaje_del_total: parseFloat(porcentajeDelTotal)
+            },
+            ofertas: resumenOfertas,
+            destacados: resumenDestacados,
+            liquidacion: resumenLiquidacion
+        };
+    };
+
 // ==============================================
 // CONTROLADORES PRINCIPALES
 // ==============================================
@@ -274,6 +349,10 @@ const obtenerEstadisticasCompletas = asyncHandler(async (req, res) => {
             )
         ]);
 
+        const [productosEspeciales] = await Promise.all([
+            obtenerDatosProductosEspeciales(filtro) // Nueva función helper
+        ]);
+
         // Extraer datos base para métricas adicionales
         const datosBase = {
             ingresos_totales: resumenResult[0]?.ingresos_totales || 0,
@@ -304,6 +383,7 @@ const obtenerEstadisticasCompletas = asyncHandler(async (req, res) => {
             inventario: {
                 productos_stock_bajo: productosStockBajo || []
             },
+            productos_especiales: productosEspeciales,
             periodo: {
                 fecha_inicio: rangoFechas.fechaInicio,
                 fecha_fin: rangoFechas.fechaFin,
@@ -626,6 +706,148 @@ const obtenerEstadisticasProducto = asyncHandler(async (req, res) => {
     }
 });
 
+const obtenerEstadisticasProductosEspeciales = asyncHandler(async (req, res) => {
+    const { fechaInicio, fechaFin } = req.query;
+    const startTime = Date.now();
+    
+    logEstadisticas('Obteniendo estadísticas de productos especiales', 'info');
+
+    try {
+        const rangoFechas = validarRangoFechas(fechaInicio, fechaFin);
+        const filtro = construirFiltroFechas(rangoFechas.fechaInicio, rangoFechas.fechaFin);
+        
+        // Obtener datos de cada categoría especial
+        const [
+            ofertas,
+            destacados,
+            liquidacion,
+            ventasTotales
+        ] = await Promise.all([
+            // Ofertas
+            executeQuery(
+                `SELECT 
+                    at.CODIGO_BARRA as codigo_barra,
+                    at.art_desc_vta as nombre,
+                    COALESCE(a.STOCK, 0) as stock,
+                    COALESCE(SUM(pc.cantidad), 0) as total_vendido,
+                    COALESCE(SUM(pc.subtotal), 0) as ingresos
+                 FROM articulo_temp at
+                 LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                 LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                 LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                 WHERE at.cat = '1' AND at.activo = 1
+                 GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                 ORDER BY total_vendido DESC`,
+                filtro.params,
+                'STATS_OFERTAS'
+            ),
+            
+            // Destacados
+            executeQuery(
+                `SELECT 
+                    at.CODIGO_BARRA as codigo_barra,
+                    at.art_desc_vta as nombre,
+                    COALESCE(a.STOCK, 0) as stock,
+                    COALESCE(SUM(pc.cantidad), 0) as total_vendido,
+                    COALESCE(SUM(pc.subtotal), 0) as ingresos
+                 FROM articulo_temp at
+                 LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                 LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                 LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                 WHERE at.cat = '2' AND at.activo = 1
+                 GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                 ORDER BY total_vendido DESC`,
+                filtro.params,
+                'STATS_DESTACADOS'
+            ),
+            
+            // Liquidación
+            executeQuery(
+                `SELECT 
+                    at.CODIGO_BARRA as codigo_barra,
+                    at.art_desc_vta as nombre,
+                    COALESCE(a.STOCK, 0) as stock,
+                    COALESCE(SUM(pc.cantidad), 0) as total_vendido,
+                    COALESCE(SUM(pc.subtotal), 0) as ingresos
+                 FROM articulo_temp at
+                 LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
+                 LEFT JOIN pedidos_contenido pc ON at.CODIGO_BARRA = pc.codigo_barra
+                 LEFT JOIN pedidos p ON pc.id_pedido = p.id_pedido AND ${filtro.whereClause.replace('WHERE ', '')}
+                 WHERE at.cat = '3' AND at.activo = 1
+                 GROUP BY at.CODIGO_BARRA, at.art_desc_vta, a.STOCK
+                 ORDER BY total_vendido DESC`,
+                filtro.params,
+                'STATS_LIQUIDACION'
+            ),
+            
+            // Ventas totales para calcular porcentaje
+            executeQuery(
+                `SELECT COALESCE(SUM(cantidad_productos), 0) as total_vendido
+                 FROM pedidos p
+                 ${filtro.whereClause}`,
+                filtro.params,
+                'STATS_VENTAS_TOTALES'
+            )
+        ]);
+
+        // Calcular resúmenes
+        const calcularResumen = (productos) => {
+            const totalVendido = productos.reduce((sum, p) => sum + (parseInt(p.total_vendido) || 0), 0);
+            const ingresos = productos.reduce((sum, p) => sum + (parseFloat(p.ingresos) || 0), 0);
+            
+            return {
+                cantidad_productos: productos.length,
+                total_vendido: totalVendido,
+                ingresos: Math.round(ingresos * 100) / 100,
+                ticket_promedio: totalVendido > 0 ? Math.round((ingresos / totalVendido) * 100) / 100 : 0,
+                productos: productos
+            };
+        };
+
+        const resumenOfertas = calcularResumen(ofertas);
+        const resumenDestacados = calcularResumen(destacados);
+        const resumenLiquidacion = calcularResumen(liquidacion);
+
+        const totalVendidoEspeciales = resumenOfertas.total_vendido + 
+                                       resumenDestacados.total_vendido + 
+                                       resumenLiquidacion.total_vendido;
+        
+        const totalVendidoGeneral = ventasTotales[0]?.total_vendido || 0;
+        
+        const porcentajeDelTotal = totalVendidoGeneral > 0 
+            ? ((totalVendidoEspeciales / totalVendidoGeneral) * 100).toFixed(1)
+            : 0;
+
+        const estadisticas = {
+            productos_especiales: {
+                resumen: {
+                    total_productos: ofertas.length + destacados.length + liquidacion.length,
+                    total_vendido: totalVendidoEspeciales,
+                    ingresos_totales: Math.round((resumenOfertas.ingresos + resumenDestacados.ingresos + resumenLiquidacion.ingresos) * 100) / 100,
+                    porcentaje_del_total: parseFloat(porcentajeDelTotal)
+                },
+                ofertas: resumenOfertas,
+                destacados: resumenDestacados,
+                liquidacion: resumenLiquidacion
+            },
+            periodo: rangoFechas,
+            timestamp: new Date().toISOString()
+        };
+
+        const duration = Date.now() - startTime;
+        logEstadisticas(`✅ Estadísticas de productos especiales obtenidas (${duration}ms)`, 'success');
+        
+        res.json(estadisticas);
+    } catch (error) {
+        logEstadisticas(`❌ Error obteniendo estadísticas de productos especiales: ${error.message}`, 'error');
+        res.status(500).json({ 
+            error: 'Error al obtener estadísticas de productos especiales',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
 // ==============================================
 // EXPORTAR CONTROLADORES
 // ==============================================
@@ -634,5 +856,6 @@ module.exports = {
     obtenerEstadisticasCompletas,
     obtenerMetricasRapidas,
     compararPeriodos,
-    obtenerEstadisticasProducto
+    obtenerEstadisticasProducto,
+    obtenerEstadisticasProductosEspeciales
 };

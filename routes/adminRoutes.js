@@ -130,6 +130,9 @@ router.put('/actualizarPrecioLiquidacion', adminController.actualizarPrecioLiqui
 router.delete('/eliminarArticuloLiquidacion/:CODIGO_BARRA', adminController.eliminarArticuloLiquidacion);
 
 
+router.get('/pedido/:id/ticket', adminController.generarTicketHTML);
+
+
 // ==============================================
 // MIDDLEWARE DE MANEJO DE ERRORES ESPECÍFICO
 // ==============================================

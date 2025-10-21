@@ -277,10 +277,7 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
 });
 
 const pedidosPendientesCheck = asyncHandler(async (req, res) => {
-    const startTime = Date.now();
-    
     try {
-        // Consulta optimizada solo para checkeo - campos mínimos
         const query = `
             SELECT 
                 id_pedido, 
@@ -298,12 +295,11 @@ const pedidosPendientesCheck = asyncHandler(async (req, res) => {
 
         const results = await executeQuery(query, [], 'PEDIDOS_CHECK');
         
-        const duration = Date.now() - startTime;
-        console.log(`✅ Check de pedidos completado (${duration}ms) - ${results.length} pedidos`);
+        console.log(`✅ Check completado - ${results.length} pedidos pendientes`);
         
-        res.json(results);
+        res.json(results); // ✅ CRUCIAL: Devolver array directamente
     } catch (error) {
-        console.error(`❌ Error en check de pedidos: ${error.message}`);
+        console.error(`❌ Error en check de pedidos:`, error);
         res.status(500).json({ 
             error: 'Error al verificar pedidos',
             timestamp: new Date().toISOString()
@@ -489,19 +485,19 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
             });
         }
 
-        // 4. SI EL NUEVO ESTADO ES "entregado", INSERTAR EN TABLAS DE CARRITO
+        // 4. 🔴 CAMBIO AQUÍ: SI EL NUEVO ESTADO ES "confirmado", INSERTAR EN TABLAS DE CARRITO
         let insertadoEnCarrito = false;
-        if (estado.toLowerCase() === 'entregado') {
+        if (estado.toLowerCase() === 'confirmado') {  // ✅ CAMBIADO DE 'entregado' A 'confirmado'
             logAdmin(`Verificando si pedido ${pedidoId} ya existe en carrito`, 'info', 'CARRITO');
             
-            // 🆕 VERIFICAR SI YA EXISTE EN CARRITO (EVITAR DUPLICADOS)
+            // Verificar si ya existe en carrito (evitar duplicados)
             const [carritoExistente] = await connection.execute(`
                 SELECT idcarrito FROM carrito WHERE idcarrito = ?
             `, [pedidoId]);
 
             if (carritoExistente.length > 0) {
                 logAdmin(`⚠️ Pedido ${pedidoId} YA EXISTE en carrito - omitiendo inserción`, 'warn', 'CARRITO');
-                insertadoEnCarrito = false; // Ya existía
+                insertadoEnCarrito = false;
             } else {
                 logAdmin(`✅ Insertando pedido ${pedidoId} en historial de carrito`, 'info', 'CARRITO');
                 
@@ -522,18 +518,18 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                         data_pago
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
-                    pedidoActual.id_pedido,           // idcarrito (usamos el ID del pedido)
-                    3,                                // status (3 para completado)
-                    pedidoActual.email_cliente,       // id_cliente (usamos email como ID)
-                    pedidoActual.cantidad_productos,  // cantidad
-                    pedidoActual.monto_total,         // Total
-                    pedidoActual.fecha,               // fecha
-                    pedidoActual.cliente,             // cli_nombre
-                    pedidoActual.direccion_cliente,   // cli_direccion
-                    pedidoActual.telefono_cliente,    // cli_tel
-                    pedidoActual.email_cliente,       // cli_email
-                    pedidoActual.medio_pago,          // medio_pago
-                    ''                                // data_pago (vacío por ahora)
+                    pedidoActual.id_pedido,
+                    2,  // ✅ CAMBIADO: status = 2 para "confirmado" (antes era 3 para "completado")
+                    pedidoActual.email_cliente,
+                    pedidoActual.cantidad_productos,
+                    pedidoActual.monto_total,
+                    pedidoActual.fecha,
+                    pedidoActual.cliente,
+                    pedidoActual.direccion_cliente,
+                    pedidoActual.telefono_cliente,
+                    pedidoActual.email_cliente,
+                    pedidoActual.medio_pago,
+                    ''
                 ]);
 
                 if (carritoInsert.affectedRows === 0) {
@@ -545,7 +541,7 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                     });
                 }
 
-                // 4.2. Obtener productos del pedido para insertar en carrito_cont
+                // 4.2. Obtener productos del pedido
                 const [productosResult] = await connection.execute(`
                     SELECT * FROM pedidos_contenido WHERE id_pedido = ?
                 `, [pedidoId]);
@@ -561,11 +557,11 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                             precio
                         ) VALUES (?, ?, ?, ?, ?)
                     `, [
-                        pedidoActual.id_pedido,           // idcarrito (referencia al carrito padre)
-                        producto.cod_interno || 0,        // cod_interno (0 si es NULL)
-                        producto.codigo_barra,            // codigo_barra
-                        producto.cantidad,                // cantidad
-                        producto.precio                   // precio
+                        pedidoActual.id_pedido,
+                        producto.cod_interno || 0,
+                        producto.codigo_barra,
+                        producto.cantidad,
+                        producto.precio
                     ]);
 
                     if (contInsert.affectedRows === 0) {
@@ -583,15 +579,30 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
             }
         }
 
-        // 5. Confirmar toda la transacción
+        // 5. 🆕 NUEVO: Si pasa de "confirmado" a "entregado", actualizar status en carrito
+        if (estadoAnterior.toLowerCase() === 'confirmado' && estado.toLowerCase() === 'entregado') {
+            logAdmin(`Actualizando status de carrito ${pedidoId} a entregado`, 'info', 'CARRITO');
+            
+            const [updateCarrito] = await connection.execute(`
+                UPDATE carrito SET status = 3 WHERE idcarrito = ?
+            `, [pedidoId]);
+
+            if (updateCarrito.affectedRows > 0) {
+                logAdmin(`✅ Status de carrito ${pedidoId} actualizado a entregado (status=3)`, 'success', 'CARRITO');
+            }
+        }
+
+        // 6. Confirmar toda la transacción
         await connection.commit();
 
         const response = {
             success: true,
-            message: estado.toLowerCase() === 'entregado' 
+            message: estado.toLowerCase() === 'confirmado' 
                 ? insertadoEnCarrito 
-                    ? `Pedido marcado como entregado e insertado en historial de ventas`
-                    : `Pedido marcado como entregado (ya existía en historial)`
+                    ? `Pedido confirmado e insertado en historial de ventas`
+                    : `Pedido confirmado (ya existía en historial)`
+                : estado.toLowerCase() === 'entregado'
+                ? `Pedido marcado como entregado`
                 : `Estado del pedido actualizado de '${estadoAnterior}' a '${estado}'`,
             data: {
                 pedido_id: pedidoId,
@@ -600,7 +611,7 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                 estado_nuevo: estado,
                 notas: notas || null,
                 insertado_en_carrito: insertadoEnCarrito,
-                ya_existia_en_carrito: estado.toLowerCase() === 'entregado' && !insertadoEnCarrito,
+                ya_existia_en_carrito: estado.toLowerCase() === 'confirmado' && !insertadoEnCarrito,
                 fecha_actualizacion: new Date().toISOString()
             },
             timestamp: new Date().toISOString()
@@ -2778,6 +2789,168 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
 
 
 
+const generarTicketHTML = asyncHandler(async (req, res) => {
+    const pedidoId = req.params.id;
+    const startTime = Date.now();
+    
+    logAdmin(`Generando ticket HTML para pedido: ${pedidoId}`, 'info', 'TICKET');
+    
+    if (!pedidoId || isNaN(pedidoId)) {
+        return res.status(400).json({ 
+            success: false,
+            error: 'ID de pedido inválido',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+
+        // 1. Obtener datos del pedido
+        const [pedidoResult] = await connection.execute(`
+            SELECT 
+                id_pedido,
+                fecha,
+                cliente,
+                direccion_cliente,
+                telefono_cliente,
+                email_cliente,
+                cantidad_productos,
+                monto_total,
+                costo_envio,
+                medio_pago,
+                estado,
+                notas_local
+            FROM pedidos 
+            WHERE id_pedido = ?
+        `, [pedidoId]);
+
+        if (pedidoResult.length === 0) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Pedido no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const pedido = pedidoResult[0];
+
+        // 2. Obtener productos del pedido
+        const [productosResult] = await connection.execute(`
+            SELECT 
+                nombre_producto,
+                cantidad,
+                precio,
+                subtotal
+            FROM pedidos_contenido
+            WHERE id_pedido = ?
+            ORDER BY id ASC
+        `, [pedidoId]);
+
+        // 3. Leer template HTML
+        const templatePath = path.join(__dirname, '../resources/ticket/ticket.html');
+        let htmlTemplate = await fs.readFile(templatePath, 'utf8');
+
+        // 4. Generar filas de productos
+        let productosRows = '';
+        productosResult.forEach(producto => {
+            const precioUnitario = parseFloat(producto.precio).toFixed(2);
+            const subtotal = parseFloat(producto.subtotal).toFixed(2);
+            
+            productosRows += `
+                <tr>
+                    <td class="col-cant">${producto.cantidad}</td>
+                    <td class="col-nombre">${producto.nombre_producto}</td>
+                    <td class="col-precio">$ ${subtotal}</td>
+                </tr>
+            `;
+        });
+
+        // 5. Formatear fecha y hora
+        const fechaPedido = new Date(pedido.fecha);
+        const fecha = fechaPedido.toLocaleDateString('es-AR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+        });
+        const hora = fechaPedido.toLocaleTimeString('es-AR', {
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        // 6. Calcular subtotal (total - envío)
+        const subtotal = (parseFloat(pedido.monto_total) - parseFloat(pedido.costo_envio || 0)).toFixed(2);
+        const costoEnvio = parseFloat(pedido.costo_envio || 0).toFixed(2);
+        const total = parseFloat(pedido.monto_total).toFixed(2);
+
+        // 7. Generar sección de notas si existen
+        let notasSection = '';
+        if (pedido.notas_local && pedido.notas_local.trim() !== '') {
+            notasSection = `
+                <div class="section border-top">
+                    <p><strong>NOTAS:</strong></p>
+                    <p>${pedido.notas_local}</p>
+                </div>
+            `;
+        }
+
+        // 8. Reemplazar todos los placeholders
+        htmlTemplate = htmlTemplate
+            // Datos de la tienda
+            .replace(/{{store_name}}/g, process.env.STORE_NAME || 'PuntoSur')
+            .replace(/{{store_address}}/g, process.env.STORE_ADDRESS || 'Dirección no disponible')
+            .replace(/{{store_phone}}/g, process.env.STORE_PHONE || 'Tel. no disponible')
+            .replace(/{{store_email}}/g, process.env.STORE_EMAIL || 'Email no disponible')
+            .replace(/{{store_instagram}}/g, process.env.STORE_INSTAGRAM || '@tienda')
+            
+            // Datos del pedido
+            .replace(/{{pedido_id}}/g, pedido.id_pedido)
+            .replace(/{{fecha}}/g, fecha)
+            .replace(/{{hora}}/g, hora)
+            .replace(/{{estado}}/g, pedido.estado.toUpperCase())
+            
+            // Datos del cliente
+            .replace(/{{client_name}}/g, pedido.cliente || 'N/A')
+            .replace(/{{client_address}}/g, pedido.direccion_cliente || 'N/A')
+            .replace(/{{client_phone}}/g, pedido.telefono_cliente || 'N/A')
+            .replace(/{{client_email}}/g, pedido.email_cliente || 'N/A')
+            
+            // Productos y totales
+            .replace(/{{productos_rows}}/g, productosRows)
+            .replace(/{{subtotal}}/g, subtotal)
+            .replace(/{{costo_envio}}/g, costoEnvio)
+            .replace(/{{total}}/g, total)
+            
+            // Método de pago
+            .replace(/{{medio_pago}}/g, pedido.medio_pago || 'No especificado')
+            
+            // Notas
+            .replace(/{{notas_section}}/g, notasSection);
+
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Ticket HTML generado para pedido ${pedidoId} (${duration}ms)`, 'success', 'TICKET');
+
+        // 9. Enviar respuesta
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(htmlTemplate);
+
+    } catch (error) {
+        logAdmin(`❌ Error generando ticket para pedido ${pedidoId}: ${error.message}`, 'error', 'TICKET');
+        res.status(500).json({ 
+            success: false,
+            error: 'Error interno al generar el ticket',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+            timestamp: new Date().toISOString()
+        });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
+    }
+});
+
+
 
 
 
@@ -2838,5 +3011,6 @@ module.exports = {
     agregarArticuloLiquidacion,
     actualizarPrecioLiquidacion,
     eliminarArticuloLiquidacion,
-    getPrecioCalculadoSQL
+    getPrecioCalculadoSQL,
+    generarTicketHTML
 };
