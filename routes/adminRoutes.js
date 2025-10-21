@@ -2,6 +2,7 @@
 const express = require('express');
 const adminController = require('../controllers/adminController');
 const imagenController = require('../controllers/imagenController');
+const horariosController = require('../controllers/horariosController');
 const router = express.Router();
 
 // ==============================================
@@ -131,6 +132,17 @@ router.delete('/eliminarArticuloLiquidacion/:CODIGO_BARRA', adminController.elim
 
 
 router.get('/pedido/:id/ticket', adminController.generarTicketHTML);
+
+
+
+
+
+// Rutas de horarios
+router.get('/horarios', horariosController.obtenerHorarios);
+router.put('/horarios/dia', horariosController.actualizarHorarioDia);
+router.post('/horarios/excepcion', horariosController.agregarExcepcion);
+router.delete('/horarios/excepcion/:id', horariosController.eliminarExcepcion);
+router.get('/horarios/estado', horariosController.verificarEstadoActual);
 
 
 // ==============================================
