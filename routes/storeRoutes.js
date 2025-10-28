@@ -62,6 +62,87 @@ router.post('/mailPedidoRealizado', storeController.MailPedidoRealizado);
 router.get("/getShowcase", storeController.getShowcase);
 router.post("/subirImagenPublicidad", storeController.subirImagenPublicidad);
 router.delete("/eliminarImagenPublicidad/:nombreImagen", storeController.eliminarImagenPublicidad);
+router.get('/showcase/:filename', (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, '..', 'uploads', 'publicidad', filename);
+    
+    console.log('📦 Showcase file:', filename);
+    
+    if (!fs.existsSync(filePath)) {
+      console.error('❌ No encontrado:', filePath);
+      return res.status(404).json({ error: 'Archivo no encontrado' });
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const esVideo = ['.mp4', '.webm', '.ogg', '.mov'].includes(ext);
+
+    if (esVideo) {
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+      const range = req.headers.range;
+
+      const mimeTypes = {
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+        '.ogg': 'video/ogg',
+        '.mov': 'video/quicktime'
+      };
+      const mimeType = mimeTypes[ext] || 'video/mp4';
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = (end - start) + 1;
+
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': mimeType,
+          'Access-Control-Allow-Origin': '*'
+        });
+
+        console.log(`✅ Video streaming: ${start}-${end}/${fileSize}`);
+        fs.createReadStream(filePath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': fileSize,
+          'Content-Type': mimeType,
+          'Accept-Ranges': 'bytes',  // ← CRÍTICO
+          'Access-Control-Allow-Origin': '*'
+        });
+
+        console.log(`✅ Video completo: ${fileSize} bytes`);
+        fs.createReadStream(filePath).pipe(res);
+      }
+    } else {
+      const mimeTypes = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp'
+      };
+      const mimeType = mimeTypes[ext] || 'image/jpeg';
+
+      res.writeHead(200, {
+        'Content-Type': mimeType,
+        'Access-Control-Allow-Origin': '*'
+      });
+
+      console.log(`✅ Imagen: ${filename}`);
+      fs.createReadStream(filePath).pipe(res);
+    }
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Imágenes de productos
 router.get("/verificarImagen/:codigo_barra", storeController.verificarImagenArticulo);

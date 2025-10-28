@@ -80,22 +80,25 @@ const getParametersFromRequest = (req) => {
     let page = req.params.page || req.query.page || 1;
     let limit = req.params.limit || req.query.limit || 30;
     let searchTerm = req.params.searchTerm || req.query.q;
-    
-    // Decodificar searchTerm si viene de URL
+
+    // ⚠️ NO hacer decodeURIComponent aquí - Express ya decodifica automáticamente los params
+    // Solo hacer trim para limpiar espacios
     if (searchTerm) {
-        searchTerm = decodeURIComponent(searchTerm);
+        searchTerm = searchTerm.trim();
     }
-    
+
     // Validar y convertir a números
     page = Math.max(1, parseInt(page) || 1);
     limit = Math.min(100, Math.max(1, parseInt(limit) || 30));
     const offset = (page - 1) * limit;
-    
+
     console.log(`📋 Parámetros extraídos:`, {
         page,
         limit,
         offset,
         searchTerm,
+        searchTermLength: searchTerm?.length,
+        searchTermType: typeof searchTerm,
         categoryId: req.params.categoryId,
         source: req.params.page ? 'path' : 'query',
         allParams: {
@@ -103,7 +106,7 @@ const getParametersFromRequest = (req) => {
             query: req.query
         }
     });
-    
+
     return { page, limit, offset, searchTerm };
 };
 
@@ -117,15 +120,13 @@ const articulosOferta = asyncHandler(async (req, res) => {
     logController('Obteniendo artículos en oferta', 'info', 'OFERTAS');
     
     try {
-        const precioColumn = getPrecioColumn();
-
         const query = `
-            SELECT 
-                at.CODIGO_BARRA,
-                a.COD_INTERNO,
-                at.art_desc_vta,
-                a.${precioColumn} AS PRECIO,
-                at.PRECIO_DESC,
+    SELECT 
+        at.CODIGO_BARRA,
+        a.COD_INTERNO,
+        at.art_desc_vta,
+        at.PRECIO AS PRECIO,
+        at.PRECIO_DESC,
                 a.STOCK,
                 a.PESABLE
                 
@@ -414,9 +415,9 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
 const buscarProductos = asyncHandler(async (req, res) => {
     const startTime = Date.now();
     const { page, limit, offset, searchTerm } = getParametersFromRequest(req);
-    
+
     logController(`Búsqueda de productos: "${searchTerm}" - Página ${page}`, 'info', 'BUSQUEDA');
-    
+
     // Validación mejorada
     if (!searchTerm || searchTerm.trim().length < 2) {
         console.log(`❌ Término de búsqueda inválido:`, {
@@ -426,18 +427,39 @@ const buscarProductos = asyncHandler(async (req, res) => {
             params: req.params,
             query: req.query
         });
-        
-        return res.status(400).json({ 
+
+        return res.status(400).json({
             error: 'Término de búsqueda debe tener al menos 2 caracteres',
             received: searchTerm,
             timestamp: new Date().toISOString()
         });
     }
 
+    // Log adicional para debug
+    console.log(`🔍 [BUSQUEDA DEBUG]`, {
+        searchTerm,
+        searchTermLength: searchTerm?.length,
+        searchTermType: typeof searchTerm,
+        page,
+        limit,
+        offset
+    });
+
     try {
         const precioColumn = getPrecioColumn();
-        const searchPattern = `%${searchTerm.trim()}%`;
-        const exactStart = `${searchTerm.trim()}%`;
+
+        // Escapar caracteres especiales de SQL LIKE (%, _)
+        const escapedTerm = searchTerm.trim().replace(/[%_]/g, '\\$&');
+        const searchPattern = `%${escapedTerm}%`;
+        const exactStart = `${escapedTerm}%`;
+
+        console.log(`🔍 [BUSQUEDA] Patrones de búsqueda:`, {
+            original: searchTerm,
+            trimmed: searchTerm.trim(),
+            escaped: escapedTerm,
+            searchPattern,
+            exactStart
+        });
 
         const countQuery = `
             SELECT COUNT(*) as total 
@@ -500,10 +522,55 @@ const buscarProductos = asyncHandler(async (req, res) => {
 
         const totalCount = countResult[0].total;
         const response = createPaginatedResponse(products, page, limit, totalCount);
-        
+
         const duration = Date.now() - startTime;
+
+        // Log detallado cuando no hay resultados
+        if (products.length === 0 && totalCount === 0) {
+            console.log(`⚠️ [BUSQUEDA] Sin resultados para "${searchTerm}"`, {
+                searchPattern,
+                exactStart,
+                totalCount,
+                page,
+                limit,
+                offset
+            });
+
+            // Buscar sin filtros para debug
+            const debugQuery = `
+                SELECT
+                    art_desc_vta,
+                    STOCK,
+                    STOCK_MIN,
+                    CASE
+                        WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                        WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                        ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    END AS PRECIO,
+                    HABILITADO
+                FROM articulo
+                WHERE (art_desc_vta LIKE ? OR CODIGO_BARRA LIKE ? OR NOMBRE LIKE ?)
+                LIMIT 3
+            `;
+
+            executeQuery(debugQuery, [searchPattern, searchPattern, searchPattern], 'DEBUG_BUSQUEDA')
+                .then(debugResults => {
+                    console.log(`🔍 [DEBUG] Productos encontrados sin filtros (primeros 3):`, debugResults.map(p => ({
+                        nombre: p.art_desc_vta,
+                        precio: p.PRECIO,
+                        stock: p.STOCK,
+                        stock_min: p.STOCK_MIN,
+                        habilitado: p.HABILITADO,
+                        cumple_stock: p.STOCK >= p.STOCK_MIN,
+                        cumple_precio: p.PRECIO > 0
+                    })));
+                })
+                .catch(err => console.error('Error en debug query:', err));
+        }
+
         logController(`✅ ${products.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'BUSQUEDA');
-        
+
         res.json(response);
     } catch (error) {
         logController(`❌ Error en búsqueda "${searchTerm}": ${error.message}`, 'error', 'BUSQUEDA');
@@ -1190,6 +1257,58 @@ const nuevoPedido = asyncHandler(async (req, res) => {
             precio: producto.precio || 0
         }));
 
+        // ✅ VALIDACIÓN DE STOCK - Verificar disponibilidad ANTES de crear pedido
+        console.log('🔍 [PEDIDO] Validando stock de productos...');
+        const stockIssues = [];
+
+        for (const producto of productosNormalizados) {
+            if (producto.cod_interno && producto.cod_interno > 0) {
+                const stockQuery = `
+                    SELECT COD_INTERNO, art_desc_vta, STOCK, STOCK_MIN
+                    FROM articulo
+                    WHERE COD_INTERNO = ?
+                    AND HABILITADO = 'S'
+                `;
+
+                try {
+                    const stockResult = await executeQuery(stockQuery, [producto.cod_interno], 'CHECK_STOCK');
+
+                    if (stockResult.length === 0) {
+                        stockIssues.push({
+                            producto: producto.nombre_producto,
+                            problema: 'Producto no encontrado o deshabilitado'
+                        });
+                    } else {
+                        const stockDisponible = stockResult[0].STOCK;
+                        const cantidadSolicitada = producto.cantidad;
+
+                        console.log(`📊 Stock de "${producto.nombre_producto}": ${stockDisponible} disponibles, ${cantidadSolicitada} solicitados`);
+
+                        if (stockDisponible < cantidadSolicitada) {
+                            stockIssues.push({
+                                producto: producto.nombre_producto,
+                                problema: `Stock insuficiente (disponible: ${stockDisponible}, solicitado: ${cantidadSolicitada})`
+                            });
+                        }
+                    }
+                } catch (stockError) {
+                    console.error(`❌ Error verificando stock de ${producto.nombre_producto}:`, stockError);
+                    // Continuar sin bloquear el pedido si falla la verificación de stock
+                }
+            }
+        }
+
+        // Si hay problemas de stock, devolver advertencia (no bloquear pedido completamente)
+        if (stockIssues.length > 0) {
+            console.warn('⚠️ [PEDIDO] Advertencias de stock detectadas:', stockIssues);
+            // Por ahora solo loguear, no bloquear el pedido
+            // En el futuro, puedes cambiar esto a:
+            // return res.status(400).json({
+            //     error: 'Stock insuficiente',
+            //     issues: stockIssues
+            // });
+        }
+
         // ✅ LOG para debugging
         if (process.env.NODE_ENV === 'development') {
             logController(`📦 Productos normalizados:`, 'info', 'PEDIDOS');
@@ -1393,24 +1512,73 @@ const upload = multer({
     }
 });
 
+
+
+const ordenShowcasePath = path.join(__dirname, "../resources/showcase/orden.json");
+
+
 const getShowcase = asyncHandler(async (req, res) => {
-    logController('Obteniendo imágenes de showcase', 'info', 'IMAGENES');
+    logController('📋 Obteniendo archivos de showcase con orden', 'info', 'IMAGENES');
     
     try {
+        // Leer todos los archivos del directorio
         const files = await fs.promises.readdir(showcasePath);
-        const imagenes = files.filter(file => /\.(jpg|jpeg|png|gif|webp)$/i.test(file))
-                            .map(file => `/showcase/${file}`);
+        
+        // Filtrar archivos válidos (imágenes y videos)
+        const archivosValidos = files.filter(file => 
+            /\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)$/i.test(file)
+        );
+        
+        logController(`📁 Archivos encontrados: ${archivosValidos.length}`, 'info', 'IMAGENES');
+        
+        // Intentar leer el archivo de orden personalizado
+        let ordenGuardado = [];
+        try {
+            if (fs.existsSync(ordenShowcasePath)) {
+                const contenido = await fs.promises.readFile(ordenShowcasePath, 'utf8');
+                const data = JSON.parse(contenido);
+                ordenGuardado = data.orden || [];
+                logController(`✅ Orden personalizado encontrado: ${ordenGuardado.length} archivos`, 'info', 'IMAGENES');
+            } else {
+                logController('⚠️ No hay orden personalizado, usando alfabético', 'warn', 'IMAGENES');
+            }
+        } catch (error) {
+            logController(`⚠️ Error leyendo orden: ${error.message}, usando alfabético`, 'warn', 'IMAGENES');
+        }
+        
+        // Ordenar archivos según el orden guardado
+        const archivosOrdenados = [];
+        const archivosNoOrdenados = [...archivosValidos];
+        
+        // Paso 1: Agregar archivos que están en el orden guardado
+        for (const nombreArchivo of ordenGuardado) {
+            const index = archivosNoOrdenados.indexOf(nombreArchivo);
+            if (index !== -1) {
+                archivosOrdenados.push(nombreArchivo);
+                archivosNoOrdenados.splice(index, 1);
+            }
+        }
+        
+        // Paso 2: Agregar archivos nuevos que no están en el orden (ordenados alfabéticamente)
+        archivosOrdenados.push(...archivosNoOrdenados.sort());
+        
+        // Mapear a URLs
+        const urls = archivosOrdenados.map(file => `/showcase/${file}`);
 
-        logController(`✅ ${imagenes.length} imágenes de showcase encontradas`, 'success', 'IMAGENES');
-        res.json(imagenes);
+        logController(`✅ ${urls.length} archivos enviados (${ordenGuardado.length > 0 ? 'con orden personalizado' : 'orden alfabético'})`, 'success', 'IMAGENES');
+        
+        res.json(urls);
+        
     } catch (error) {
-        logController(`❌ Error obteniendo imágenes: ${error.message}`, 'error', 'IMAGENES');
+        logController(`❌ Error obteniendo archivos: ${error.message}`, 'error', 'IMAGENES');
         res.status(500).json({ 
-            error: "No se pueden obtener las imágenes",
+            error: "No se pueden obtener los archivos",
             timestamp: new Date().toISOString()
         });
     }
 });
+
+
 
 const subirImagenPublicidad = asyncHandler(async (req, res) => {
     upload.single("imagen")(req, res, (err) => {

@@ -4,12 +4,11 @@ const session = require('express-session');
 const cors = require('cors');
 const morgan = require('morgan');
 const https = require('https');
-const path = require('path');
 const fs = require('fs');
 const { initializeDatabase, logConnection, getPoolStats } = require('./controllers/dbPS');
 
 const app = express();
-const port = 4000;
+const port = 3002;
 
 // ==============================================
 // SISTEMA DE LOGS CENTRALIZADO
@@ -35,7 +34,7 @@ const logApp = (message, level = 'info', module = 'APP') => {
 const allowedOrigins = [
     'http://localhost:3000/',
     'http://localhost:3000',
-    'http://localhost:3001/',
+    'http://localhost:3001',
     'https://vps-5234411-x.dattaweb.com/',
     'https://vps-5234411-x.dattaweb.com'
 ];
@@ -255,108 +254,18 @@ setInterval(() => {
     }
 }, 60 * 60 * 1000);
 
-
-
-
-
 // ==============================================
-// SERVIR ARCHIVOS ESTÁTICOS Y VIDEOS
+// SERVIR ARCHIVOS ESTÁTICOS
 // ==============================================
-
-// Función auxiliar para MIME types de video
-function getVideoMimeType(ext) {
-    const mimeTypes = {
-        '.mp4': 'video/mp4',
-        '.webm': 'video/webm',
-        '.ogg': 'video/ogg',
-        '.mov': 'video/quicktime',
-        '.avi': 'video/x-msvideo'
-    };
-    return mimeTypes[ext] || 'application/octet-stream';
-}
-
-// 🎬 HANDLER MANUAL PARA VIDEOS CON RANGE SUPPORT
-const videoHandler = (baseDir) => (req, res, next) => {
-    const filePath = path.join(__dirname, baseDir, req.path);
-    const ext = path.extname(filePath).toLowerCase();
-    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.avi'];
-
-    if (!videoExtensions.includes(ext)) {
-        return next(); // No es video, continuar con static
-    }
-
-    logApp(`🎬 Intentando servir video: ${filePath}`, 'info', 'VIDEO');
-
-    // Verificar que el archivo existe
-    if (!fs.existsSync(filePath)) {
-        logApp(`❌ Video no encontrado: ${filePath}`, 'error', 'VIDEO');
-        return res.status(404).send('Video no encontrado');
-    }
-
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-    const mimeType = getVideoMimeType(ext);
-
-    // CORS para videos
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Range');
-
-    if (range) {
-        // RANGE REQUEST - Streaming parcial
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-        const chunksize = (end - start) + 1;
-
-        const stream = fs.createReadStream(filePath, { start, end });
-
-        res.writeHead(206, {
-            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-            'Accept-Ranges': 'bytes',
-            'Content-Length': chunksize,
-            'Content-Type': mimeType,
-            'Cache-Control': 'public, max-age=86400'
-        });
-
-        logApp(`✅ Streaming video (range): bytes ${start}-${end}/${fileSize}`, 'success', 'VIDEO');
-        stream.pipe(res);
-    } else {
-        // FULL REQUEST - Archivo completo
-        res.writeHead(200, {
-            'Content-Length': fileSize,
-            'Content-Type': mimeType,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=86400'
-        });
-
-        logApp(`✅ Streaming video (full): ${fileSize} bytes`, 'success', 'VIDEO');
-        fs.createReadStream(filePath).pipe(res);
-    }
-};
-
-// Configuración para archivos estáticos NO-VIDEO
 const staticOptions = {
-    maxAge: '1d',
+    maxAge: '1d', // Cache por 1 día
     etag: true,
-    lastModified: true,
-    cacheControl: true,
-    index: false
+    lastModified: true
 };
 
-// RUTAS CON VIDEO HANDLER
-app.use("/showcase", videoHandler("resources/showcase"));
 app.use("/showcase", express.static("resources/showcase", staticOptions));
-
-app.use("/api/showcase", videoHandler("resources/showcase"));
-app.use("/api/showcase", express.static("resources/showcase", staticOptions));
-
-// RUTAS NORMALES (sin videos)
 app.use("/images/products", express.static("resources/img_art", staticOptions));
-app.use("/api/images/products", express.static("resources/img_art", staticOptions));
 app.use("/images", express.static("public/images", staticOptions));
-app.use("/api/images", express.static("public/images", staticOptions));
 
 
 
@@ -369,6 +278,9 @@ logApp('✅ Rutas estáticas configuradas', 'success', 'STATIC');
 const storeRoutes = require('./routes/storeRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const estadisticasRoutes = require('./routes/estadisticasRoutes');
+
+// Usar el router con prefijo
+
 
 app.use('/store', storeRoutes);
 app.use('/admin', adminRoutes);

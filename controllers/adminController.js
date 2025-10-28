@@ -203,13 +203,34 @@ const saveConfig = asyncHandler(async (req, res) => {
             .join('\n');
 
         await fs.writeFile(envPath, updatedContent, 'utf8');
-        
-        // 🆕 AGREGAR ESTO: Actualizar process.env inmediatamente
-        if (config.horaInicio) {
-            process.env.HORA_INICIO = config.horaInicio;
+
+        // Actualizar TODAS las variables en process.env inmediatamente
+        if (config.storeName) {
+            process.env.STORE_NAME = config.storeName;
         }
-        if (config.horaFin) {
-            process.env.HORA_FIN = config.horaFin;
+        if (config.storeAddress) {
+            process.env.STORE_ADDRESS = config.storeAddress;
+        }
+        if (config.storePhone) {
+            process.env.STORE_PHONE = config.storePhone;
+        }
+        if (config.storeDescription) {
+            process.env.STORE_DESCRIPTION = config.storeDescription;
+        }
+        if (config.storeInstagram) {
+            process.env.STORE_INSTAGRAM = config.storeInstagram;
+        }
+        if (config.storeEmail) {
+            process.env.STORE_EMAIL = config.storeEmail;
+        }
+        if (config.storeDeliveryBase) {
+            process.env.STORE_DELIVERY_BASE = config.storeDeliveryBase;
+        }
+        if (config.storeDeliveryKm) {
+            process.env.STORE_DELIVERY_KM = config.storeDeliveryKm;
+        }
+        if (config.mercadoPagoToken) {
+            process.env.MERCADOPAGO_ACCESS_TOKEN = config.mercadoPagoToken;
         }
         if (config.iva) {
             process.env.IVA = config.iva;
@@ -217,8 +238,19 @@ const saveConfig = asyncHandler(async (req, res) => {
         if (config.pageStatus) {
             process.env.PAGE_STATUS = config.pageStatus;
         }
-        // Agregar otras variables críticas que necesites actualizar inmediatamente
-        
+        if (config.userName) {
+            process.env.USER_NAME = config.userName;
+        }
+        if (config.passWord) {
+            process.env.PASSWORD = config.passWord;
+        }
+        if (config.horaInicio) {
+            process.env.HORA_INICIO = config.horaInicio;
+        }
+        if (config.horaFin) {
+            process.env.HORA_FIN = config.horaFin;
+        }
+
         logAdmin('✅ Configuración guardada y variables actualizadas en memoria', 'success', 'CONFIG');
         res.json({ 
             message: 'Configuración guardada exitosamente',
@@ -278,29 +310,46 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
 
 const pedidosPendientesCheck = asyncHandler(async (req, res) => {
     try {
+        const ultimo_id = parseInt(req.query.ultimo_id) || 0;
+
         const query = `
-            SELECT 
-                id_pedido, 
-                fecha, 
-                cliente, 
-                cantidad_productos, 
+            SELECT
+                id_pedido,
+                fecha,
+                cliente,
+                cantidad_productos,
                 monto_total,
                 telefono_cliente,
+                direccion_cliente,
+                email_cliente,
                 estado
-            FROM pedidos 
-            WHERE estado IN ('pendiente', 'confirmado') 
+            FROM pedidos
+            WHERE estado IN ('pendiente', 'confirmado')
             ORDER BY fecha DESC
-            LIMIT 50
+            LIMIT 1
         `;
 
         const results = await executeQuery(query, [], 'PEDIDOS_CHECK');
-        
-        console.log(`✅ Check completado - ${results.length} pedidos pendientes`);
-        
-        res.json(results); // ✅ CRUCIAL: Devolver array directamente
+
+        // Verificar si hay un nuevo pedido (ID mayor al último conocido)
+        if (results.length > 0 && results[0].id_pedido > ultimo_id) {
+            console.log(`🚨 NUEVO PEDIDO DETECTADO: #${results[0].id_pedido} (anterior: #${ultimo_id})`);
+
+            res.json({
+                nuevo_pedido: true,
+                pedido: results[0]
+            });
+        } else {
+            // No hay nuevos pedidos
+            res.json({
+                nuevo_pedido: false,
+                ultimo_id: ultimo_id
+            });
+        }
+
     } catch (error) {
         console.error(`❌ Error en check de pedidos:`, error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Error al verificar pedidos',
             timestamp: new Date().toISOString()
         });
@@ -2951,6 +3000,72 @@ const generarTicketHTML = asyncHandler(async (req, res) => {
 });
 
 
+const buscarProductosNuevo = asyncHandler(async (req, res) => {
+  const searchTerm = req.query.q?.trim() || '';
+  const startTime = Date.now();
+
+  logAdmin(`Buscando productos global: "${searchTerm}"`, 'info', 'PRODUCTOS');
+
+  if (searchTerm.length < 2) {
+    return res.status(400).json({
+      error: 'El término de búsqueda debe tener al menos 2 caracteres',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  try {
+    const precioSQL = getPrecioCalculadoSQL();
+
+    const query = `
+      SELECT 
+        COALESCE(a.art_desc_vta, a.NOMBRE) AS nombre, 
+        a.CODIGO_BARRA AS codigo_barra, 
+        COALESCE(a.COSTO, 0) AS costo, 
+        ${precioSQL} AS precio,
+        a.COD_DPTO AS categoria_id,
+        COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
+        COALESCE(a.STOCK, 0) AS stock,
+        COALESCE(a.HABILITADO, 'S') AS habilitado,
+        COALESCE(a.marca, '') AS marca,
+        a.COD_INTERNO AS cod_interno,
+        a.COD_IVA,
+        a.porc_impint
+      FROM articulo a
+      LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
+      WHERE (
+        a.art_desc_vta LIKE ? 
+        OR a.NOMBRE LIKE ? 
+        OR a.CODIGO_BARRA LIKE ?
+      )
+      AND a.HABILITADO = 'S'
+      ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
+      LIMIT 50
+    `;
+
+    const searchPattern = `%${searchTerm}%`;
+    const results = await executeQuery(query, [searchPattern, searchPattern, searchPattern], 'BUSCAR_PRODUCTOS');
+
+    const productosFormateados = results.map((p) => ({
+      ...p,
+      costo: parseFloat(p.costo) || 0,
+      precio: parseFloat(p.precio) || 0,
+      stock: parseInt(p.stock) || 0,
+      categoria: p.categoria || 'Sin categoría',
+    }));
+
+    const duration = Date.now() - startTime;
+    logAdmin(`✅ ${productosFormateados.length} productos encontrados para "${searchTerm}" (${duration}ms)`, 'success', 'PRODUCTOS');
+
+    res.json(productosFormateados);
+  } catch (error) {
+    logAdmin(`❌ Error buscando productos "${searchTerm}": ${error.message}`, 'error', 'PRODUCTOS');
+    res.status(500).json({
+      error: 'Error al buscar productos',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 
 
 
@@ -3012,5 +3127,6 @@ module.exports = {
     actualizarPrecioLiquidacion,
     eliminarArticuloLiquidacion,
     getPrecioCalculadoSQL,
-    generarTicketHTML
+    generarTicketHTML,
+    buscarProductosNuevo
 };

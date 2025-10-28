@@ -2,6 +2,7 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+
 const fsSync = require('fs');
 const sharp = require('sharp');
 
@@ -80,7 +81,6 @@ const storagePublicidad = multer.diskStorage({
     destination: (req, file, cb) => {
         logImagen(`📂 Configurando destino para: ${file.originalname}`, 'info', 'MULTER');
         
-        // Verificar que el directorio existe
         if (!fsSync.existsSync(publicidadPath)) {
             const error = new Error(`Directorio de destino no existe: ${publicidadPath}`);
             logImagen(`❌ ${error.message}`, 'error', 'MULTER');
@@ -112,30 +112,48 @@ const storagePublicidad = multer.diskStorage({
 const uploadPublicidad = multer({ 
     storage: storagePublicidad,
     limits: { 
-        fileSize: 5 * 1024 * 1024,  // 5MB
-        files: 1,                   // Solo 1 archivo
-        fields: 10,                 // Máximo 10 campos
-        fieldSize: 1024 * 1024      // 1MB por campo
+        fileSize: 50 * 1024 * 1024,  // ✅ 50MB para videos
+        files: 1,
+        fields: 10,
+        fieldSize: 1024 * 1024
     },
     fileFilter: (req, file, cb) => {
         logImagen(`🔍 Validando archivo: ${file.originalname}, tipo: ${file.mimetype}`, 'info', 'MULTER');
         
-        const allowedTypes = /jpeg|jpg|png|webp/;
-        const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        // ✅ PERMITIR IMÁGENES Y VIDEOS
+        const allowedMimeTypes = [
+            // Imágenes
+            'image/jpeg', 
+            'image/jpg', 
+            'image/png', 
+            'image/webp',
+            // Videos
+            'video/mp4', 
+            'video/webm', 
+            'video/quicktime',
+            'video/x-msvideo', // AVI
+            'video/mpeg'       // MPEG
+        ];
         
-        const mimetype = allowedMimeTypes.includes(file.mimetype.toLowerCase());
-        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const allowedExtensions = /\.(jpeg|jpg|png|webp|mp4|webm|mov|avi|mpeg)$/i;
         
-        if (mimetype && extname) {
-            logImagen(`✅ Archivo válido: ${file.originalname}`, 'success', 'MULTER');
+        const mimetypeValido = allowedMimeTypes.includes(file.mimetype.toLowerCase());
+        const extensionValida = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
+        
+        if (mimetypeValido && extensionValida) {
+            logImagen(`✅ Archivo válido: ${file.originalname} (${file.mimetype})`, 'success', 'MULTER');
             return cb(null, true);
         }
         
-        const error = new Error(`Archivo no válido: ${file.originalname}. Solo se permiten: JPG, PNG, WEBP`);
+        const error = new Error(
+            `Archivo no válido: ${file.originalname}. ` +
+            `Tipo recibido: ${file.mimetype}. ` +
+            `Solo se permiten imágenes (JPG, PNG, WEBP) y videos (MP4, WEBM, MOV)`
+        );
         logImagen(`❌ ${error.message}`, 'error', 'MULTER');
         cb(error);
     }
-}).single("imagen"); // IMPORTANTE: debe coincidir con el nombre del campo en el frontend
+}).single("imagen");  // IMPORTANTE: debe coincidir con el nombre del campo en el frontend
 
 // ==============================================
 // CONTROLADOR MEJORADO PARA PUBLICIDAD
@@ -521,7 +539,7 @@ const obtenerImagenesPublicidad = asyncHandler(async (req, res) => {
         const archivos = await fs.readdir(publicidadPath);
         const imagenesValidas = archivos.filter(archivo => {
             const extension = path.extname(archivo).toLowerCase();
-            return ['.jpg', '.jpeg', '.png', '.webp'].includes(extension);
+            return ['.jpg', '.jpeg', '.png', '.webp', '.mp4', '.webm', '.mov'].includes(extension);
         });
         
         const imagenesConRuta = imagenesValidas.map(archivo => `/showcase/${archivo}`);
@@ -579,56 +597,74 @@ const eliminarImagenPublicidad = asyncHandler(async (req, res) => {
     }
 });
 
-const verificarImagenProducto = asyncHandler(async (req, res) => {
-    const { codigoBarra } = req.params;
-    
-    logImagen(`🔍 Verificando imagen para producto: ${codigoBarra}`, 'info', 'PRODUCTO');
-    
-    if (!codigoBarra) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Código de barra es requerido' 
-        });
-    }
+const verificarImagenProducto = async (req, res) => {
+    const timestamp = new Date().toISOString();
     
     try {
-        const extensiones = ['.jpg', '.jpeg', '.png', '.webp'];
-        let archivoEncontrado = null;
+        const { codigoBarra } = req.params;
         
-        for (const ext of extensiones) {
-            const nombreArchivo = `${codigoBarra}${ext}`;
-            const ruta = path.join(productosPath, nombreArchivo);
-            
-            if (fsSync.existsSync(ruta)) {
-                archivoEncontrado = nombreArchivo;
+        console.log(`[${timestamp}] 🔍 Verificando imagen de producto: ${codigoBarra}`);
+
+        if (!codigoBarra) {
+            return res.status(400).json({
+                success: false,
+                message: 'Código de barra requerido'
+            });
+        }
+
+        // Buscar imagen con cualquier extensión permitida
+        const dirProductos = path.join(__dirname, '../uploads/productos');
+        const extensionesPermitidas = ['jpg', 'jpeg', 'png', 'webp'];
+        
+        let imagenEncontrada = null;
+        let rutaImagen = null;
+
+        for (const ext of extensionesPermitidas) {
+            const rutaTemporal = path.join(dirProductos, `${codigoBarra}.${ext}`);
+            if (fsSync.existsSync(rutaTemporal)) {
+                imagenEncontrada = `${codigoBarra}.${ext}`;
+                rutaImagen = rutaTemporal;
                 break;
             }
         }
-        
-        const existe = !!archivoEncontrado;
-        
-        logImagen(`📸 Imagen para ${codigoBarra}: ${existe ? 'Existe' : 'No existe'}`, 'info', 'PRODUCTO');
-        
-        res.json({ 
-            success: true, 
-            data: {
-                codigoBarra,
-                existe,
-                archivo: archivoEncontrado ? {
-                    nombreArchivo: archivoEncontrado,
-                    ruta: `/images/products/${archivoEncontrado}`
-                } : null
-            }
-        });
-        
+
+        if (imagenEncontrada) {
+            // 🆕 Obtener información adicional del archivo
+            const stats = fsSync.statSync(rutaImagen);
+            const tamañoMB = (stats.size / (1024 * 1024)).toFixed(2);
+            
+            console.log(`[${timestamp}] ✅ Imagen encontrada: ${imagenEncontrada} (${tamañoMB} MB)`);
+            
+            res.json({
+                success: true,
+                data: {
+                    existe: true,
+                    nombreArchivo: imagenEncontrada,
+                    url: `/uploads/productos/${imagenEncontrada}`,
+                    tamaño: tamañoMB + ' MB',
+                    fechaModificacion: stats.mtime
+                }
+            });
+        } else {
+            console.log(`[${timestamp}] ℹ️ No existe imagen para producto: ${codigoBarra}`);
+            
+            res.json({
+                success: true,
+                data: {
+                    existe: false
+                }
+            });
+        }
+
     } catch (error) {
-        logImagen(`❌ Error verificando imagen: ${error.message}`, 'error', 'PRODUCTO');
-        res.status(500).json({ 
-            success: false, 
-            message: 'Error al verificar imagen del producto' 
+        console.error(`[${timestamp}] ❌ Error verificando imagen de producto:`, error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al verificar imagen del producto',
+            error: process.env.NODE_ENV !== 'production' ? error.message : undefined
         });
     }
-});
+};
 
 const eliminarImagenProducto = asyncHandler(async (req, res) => {
     const { codigoBarra } = req.params;
@@ -708,7 +744,7 @@ const subirImagenPublicidadBase64 = asyncHandler(async (req, res) => {
         logImagen(`📋 Archivo recibido: ${nombreArchivo} (${tamaño} bytes)`, 'info', 'PUBLICIDAD_BASE64');
         
         // Extraer datos de la imagen Base64
-        const matches = imagen.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        const matches = imagen.match(/^data:([A-Za-z0-9+/-]+);base64,(.+)$/);
         if (!matches || matches.length !== 3) {
             return res.status(400).json({ 
                 success: false, 
@@ -790,25 +826,169 @@ const subirImagenPublicidadBase64 = asyncHandler(async (req, res) => {
 });
 
 
-const subirImagenProductoBase64 = asyncHandler(async (req, res) => {
-    const startTime = Date.now();
-    logImagen('🚀 Iniciando subida de imagen Base64 (producto)', 'info', 'PRODUCTO_BASE64');
+const subirImagenProductoBase64 = async (req, res) => {
+    const timestamp = new Date().toISOString();
     
     try {
-        const { imagen, codigo_barra, nombreArchivo, tipoArchivo } = req.body;
+        const { imagen, codigo_barra, nombreArchivo, tipoArchivo, reemplazar } = req.body;
         
-        // Validar datos recibidos
+        console.log(`[${timestamp}] 📤 Subiendo imagen de producto (Base64):`, {
+            codigo_barra,
+            nombreArchivo,
+            tipoArchivo,
+            reemplazar: !!reemplazar,
+            tamañoBase64: imagen ? imagen.length : 0
+        });
+
+        // Validaciones básicas
         if (!imagen || !codigo_barra) {
+            return res.status(400).json({
+                success: false,
+                message: 'Imagen y código de barra son requeridos'
+            });
+        }
+
+        // Validar formato Base64
+        if (!imagen.includes('base64,')) {
+            return res.status(400).json({
+                success: false,
+                message: 'Formato de imagen inválido'
+            });
+        }
+
+        // Crear directorio si no existe
+        const dirProductos = path.join(__dirname, '../uploads/productos');
+        if (!fsSync.existsSync(dirProductos)) {
+            fsSync.mkdirSync(dirProductos, { recursive: true });
+            console.log(`[${timestamp}] 📁 Directorio de productos creado`);
+        }
+
+        // 🆕 NUEVO: Verificar si ya existe imagen (buscar con todas las extensiones)
+        const extensionesPermitidas = ['jpg', 'jpeg', 'png', 'webp'];
+        let imagenExistenteRuta = null;
+        let imagenYaExiste = false;
+
+        for (const ext of extensionesPermitidas) {
+            const rutaTemporal = path.join(dirProductos, `${codigo_barra}.${ext}`);
+            if (fsSync.existsSync(rutaTemporal)) {
+                imagenExistenteRuta = rutaTemporal;
+                imagenYaExiste = true;
+                break;
+            }
+        }
+        
+        if (imagenYaExiste) {
+            console.log(`[${timestamp}] ⚠️ Ya existe imagen para producto ${codigo_barra}`);
+            
+            // 🆕 Si existe y NO se solicita reemplazo, retornar error
+            if (!reemplazar) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'El producto ya tiene una imagen. Use el flag "reemplazar: true" para reemplazarla.',
+                    imagenExistente: true
+                });
+            }
+            
+            // 🆕 Si existe y se solicita reemplazo, eliminar imagen anterior
+            try {
+                fsSync.unlinkSync(imagenExistenteRuta);
+                console.log(`[${timestamp}] 🗑️ Imagen anterior eliminada: ${path.basename(imagenExistenteRuta)}`);
+            } catch (error) {
+                console.error(`[${timestamp}] ❌ Error eliminando imagen anterior:`, error);
+                // Continuar aunque falle la eliminación
+            }
+        }
+
+        // Extraer datos de la imagen Base64
+        const matches = imagen.match(/^data:(.+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+            return res.status(400).json({
+                success: false,
+                message: 'Formato Base64 inválido'
+            });
+        }
+
+        const mimeType = matches[1];
+        const base64Data = matches[2];
+
+        // Validar tipo de imagen
+        const tiposPermitidos = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (!tiposPermitidos.includes(mimeType)) {
+            return res.status(400).json({
+                success: false,
+                message: `Tipo de archivo no permitido: ${mimeType}. Solo se permiten: JPG, PNG, WEBP`
+            });
+        }
+
+        // Determinar extensión
+        const extension = mimeType === 'image/png' ? 'png' 
+                        : mimeType === 'image/webp' ? 'webp' 
+                        : 'jpg';
+
+        // Guardar imagen con el código de barra como nombre
+        const nombreImagen = `${codigo_barra}.${extension}`;
+        const rutaImagen = path.join(dirProductos, nombreImagen);
+
+        // Convertir Base64 a buffer y guardar
+        const buffer = Buffer.from(base64Data, 'base64');
+        fsSync.writeFileSync(rutaImagen, buffer);
+
+        const tamañoMB = (buffer.length / (1024 * 1024)).toFixed(2);
+        
+        // 🆕 Mensaje personalizado según si fue reemplazo o nueva imagen
+        const mensaje = imagenYaExiste 
+            ? `Imagen del producto ${codigo_barra} reemplazada exitosamente`
+            : `Imagen del producto ${codigo_barra} subida exitosamente`;
+        
+        console.log(`[${timestamp}] ✅ ${mensaje} (${tamañoMB} MB)`);
+
+        res.json({
+            success: true,
+            message: mensaje,
+            data: {
+                codigo_barra,
+                nombreArchivo: nombreImagen,
+                url: `/uploads/productos/${nombreImagen}`,
+                tamaño: tamañoMB + ' MB',
+                reemplazada: imagenYaExiste // 🆕 Indicar si fue reemplazo
+            }
+        });
+
+    } catch (error) {
+        console.error(`[${timestamp}] ❌ Error subiendo imagen de producto:`, error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al procesar la imagen del producto',
+            error: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
+    }
+};
+
+const subirVideoPublicidadBase64 = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logImagen('🚀 Iniciando subida de video Base64 (publicidad)', 'info', 'PUBLICIDAD_VIDEO_BASE64');
+    
+    try {
+        const { video, nombreArchivo, tipoArchivo, tamaño } = req.body;
+        
+        if (!video) {
             return res.status(400).json({ 
                 success: false, 
-                message: 'Imagen y código de barra son requeridos' 
+                message: 'No se recibió video en Base64' 
             });
         }
         
-        logImagen(`📋 Producto: ${codigo_barra}, Archivo: ${nombreArchivo}`, 'info', 'PRODUCTO_BASE64');
+        if (!nombreArchivo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Nombre de archivo es requerido' 
+            });
+        }
         
-        // Extraer datos de la imagen Base64
-        const matches = imagen.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        logImagen(`📋 Video recibido: ${nombreArchivo} (${tamaño} bytes)`, 'info', 'PUBLICIDAD_VIDEO_BASE64');
+        
+        // Extraer datos del video Base64
+        const matches = video.match(/^data:([A-Za-z0-9+/-]+);base64,(.+)$/);
         if (!matches || matches.length !== 3) {
             return res.status(400).json({ 
                 success: false, 
@@ -817,80 +997,283 @@ const subirImagenProductoBase64 = asyncHandler(async (req, res) => {
         }
         
         const mimeType = matches[1];
-        const imageData = matches[2];
+        const videoData = matches[2];
         
         // Validar tipo MIME
-        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        const allowedTypes = ['video/mp4', 'video/webm', 'video/quicktime'];
         if (!allowedTypes.includes(mimeType.toLowerCase())) {
             return res.status(400).json({ 
                 success: false, 
-                message: `Tipo de archivo no permitido: ${mimeType}` 
+                message: `Tipo de archivo no permitido: ${mimeType}. Solo MP4, WEBM, MOV` 
             });
         }
         
-        // Convertir Base64 a Buffer
-        const buffer = Buffer.from(imageData, 'base64');
+        logImagen(`✅ Tipo MIME válido: ${mimeType}`, 'success', 'PUBLICIDAD_VIDEO_BASE64');
         
-        // Validar tamaño
-        const maxSize = 5 * 1024 * 1024; // 5MB
+        // Convertir Base64 a Buffer
+        const buffer = Buffer.from(videoData, 'base64');
+        
+        // Validar tamaño (50MB máximo)
+        const maxSize = 50 * 1024 * 1024;
         if (buffer.length > maxSize) {
             return res.status(400).json({ 
                 success: false, 
-                message: 'Imagen demasiado grande. Máximo 5MB permitido' 
+                message: 'Video demasiado grande. Máximo 50MB permitido' 
             });
         }
         
-        // ✅ CONVERTIR A PNG USANDO SHARP
-        logImagen(`🔄 Convirtiendo imagen de producto a PNG...`, 'info', 'PRODUCTO_BASE64');
+        logImagen(`📏 Tamaño del buffer: ${buffer.length} bytes`, 'info', 'PUBLICIDAD_VIDEO_BASE64');
         
-        const pngBuffer = await sharp(buffer)
-            .png({
-                quality: 90,
-                compressionLevel: 9,
-                adaptiveFiltering: true
-            })
-            .toBuffer();
+        // Generar nombre único
+        const timestamp = Date.now();
+        const extension = path.extname(nombreArchivo).toLowerCase();
+        const nombreBase = path.basename(nombreArchivo, extension)
+            .replace(/[^a-zA-Z0-9.-]/g, '_')
+            .substring(0, 30);
+        const nombreFinal = `publicidad-${timestamp}-${nombreBase}${extension}`;
         
-        logImagen(`✅ Imagen convertida a PNG - Nuevo tamaño: ${pngBuffer.length} bytes`, 'success', 'PRODUCTO_BASE64');
-        
-        // Nombre del archivo SIEMPRE con extensión .png
-        const nombreFinal = `${codigo_barra}.png`; // ← SIEMPRE .png
-        
-        // Guardar archivo PNG
-        const rutaCompleta = path.join(productosPath, nombreFinal);
-        await fs.writeFile(rutaCompleta, pngBuffer);
+        // Guardar archivo
+        const rutaCompleta = path.join(publicidadPath, nombreFinal);
+        await fs.writeFile(rutaCompleta, buffer);
         
         // Verificar que se guardó correctamente
         const stats = await fs.stat(rutaCompleta);
         
         const duration = Date.now() - startTime;
-        logImagen(`✅ Imagen PNG de producto guardada exitosamente (${duration}ms): ${nombreFinal}`, 'success', 'PRODUCTO_BASE64');
+        logImagen(`✅ Video guardado exitosamente (${duration}ms): ${nombreFinal}`, 'success', 'PUBLICIDAD_VIDEO_BASE64');
         
-        const rutaRelativa = `/images/products/${nombreFinal}`;
+        const rutaRelativa = `/showcase/${nombreFinal}`;
         
         res.json({ 
             success: true, 
-            message: 'Imagen de producto subida y convertida a PNG exitosamente',
+            message: 'Video de publicidad subido exitosamente',
             data: {
-                codigoBarra: codigo_barra,
                 nombreArchivo: nombreFinal,
+                nombreOriginal: nombreArchivo,
                 tamaño: stats.size,
-                tamañoOriginal: buffer.length,
                 ruta: rutaRelativa,
-                tipoOriginal: mimeType,
-                tipoFinal: 'image/png',
+                tipo: mimeType,
+                esVideo: true,
                 tiempoSubida: `${duration}ms`
             }
         });
         
     } catch (error) {
         const duration = Date.now() - startTime;
-        logImagen(`❌ Error en subida Base64 producto (${duration}ms): ${error.message}`, 'error', 'PRODUCTO_BASE64');
+        logImagen(`❌ Error en subida Base64 video (${duration}ms): ${error.message}`, 'error', 'PUBLICIDAD_VIDEO_BASE64');
         
         res.status(500).json({ 
             success: false, 
-            message: 'Error interno al procesar la imagen del producto',
+            message: 'Error interno al procesar el video',
             details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
+    }
+});
+
+
+
+const subirArchivoPublicidadBase64 = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logImagen('🚀 Iniciando subida Base64 (publicidad - imagen/video)', 'info', 'PUBLICIDAD_BASE64');
+    
+    try {
+        const { archivo, nombreArchivo, tipoArchivo, tamaño } = req.body;
+        
+        if (!archivo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'No se recibió archivo en Base64' 
+            });
+        }
+        
+        if (!nombreArchivo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Nombre de archivo es requerido' 
+            });
+        }
+        
+        logImagen(`📋 Archivo recibido: ${nombreArchivo} (${tamaño || 'tamaño desconocido'} bytes)`, 'info', 'PUBLICIDAD_BASE64');
+        
+        // Extraer datos del Base64
+        const matches = archivo.match(/^data:([A-Za-z0-9+/-]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Formato Base64 inválido' 
+            });
+        }
+        
+        const mimeType = matches[1];
+        const fileData = matches[2];
+        
+        // ✅ Validar tipo MIME (imágenes Y videos)
+        const allowedTypes = [
+            'image/jpeg', 'image/jpg', 'image/png', 'image/webp',
+            'video/mp4', 'video/webm', 'video/quicktime'
+        ];
+        
+        if (!allowedTypes.includes(mimeType.toLowerCase())) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Tipo de archivo no permitido: ${mimeType}. Solo se permiten imágenes (JPG, PNG, WEBP) y videos (MP4, WEBM, MOV)` 
+            });
+        }
+        
+        const esVideo = mimeType.startsWith('video/');
+        logImagen(`✅ Tipo MIME válido: ${mimeType} (${esVideo ? 'VIDEO' : 'IMAGEN'})`, 'success', 'PUBLICIDAD_BASE64');
+        
+        // Convertir Base64 a Buffer
+        const buffer = Buffer.from(fileData, 'base64');
+        
+        // Validar tamaño según tipo
+        const maxSize = esVideo ? 50 * 1024 * 1024 : 5 * 1024 * 1024; // 50MB videos, 5MB imágenes
+        if (buffer.length > maxSize) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Archivo demasiado grande. Máximo ${esVideo ? '50MB' : '5MB'} permitido` 
+            });
+        }
+        
+        logImagen(`📏 Tamaño del buffer: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`, 'info', 'PUBLICIDAD_BASE64');
+        
+        // Generar nombre único
+        const timestamp = Date.now();
+        const extension = path.extname(nombreArchivo).toLowerCase();
+        const nombreBase = path.basename(nombreArchivo, extension)
+            .replace(/[^a-zA-Z0-9.-]/g, '_')
+            .substring(0, 30);
+        const nombreFinal = `publicidad-${timestamp}-${nombreBase}${extension}`;
+        
+        // Guardar archivo
+        const rutaCompleta = path.join(publicidadPath, nombreFinal);
+        await fs.writeFile(rutaCompleta, buffer);
+        
+        // Verificar que se guardó correctamente
+        const stats = await fs.stat(rutaCompleta);
+        
+        const duration = Date.now() - startTime;
+        logImagen(`✅ ${esVideo ? 'Video' : 'Imagen'} guardado exitosamente (${duration}ms): ${nombreFinal}`, 'success', 'PUBLICIDAD_BASE64');
+        
+        const rutaRelativa = `/showcase/${nombreFinal}`;
+        
+        res.json({ 
+            success: true, 
+            message: `${esVideo ? 'Video' : 'Imagen'} de publicidad subido exitosamente`,
+            data: {
+                nombreArchivo: nombreFinal,
+                nombreOriginal: nombreArchivo,
+                tamaño: stats.size,
+                ruta: rutaRelativa,
+                tipo: mimeType,
+                esVideo: esVideo,
+                tiempoSubida: `${duration}ms`
+            }
+        });
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        logImagen(`❌ Error en subida Base64 (${duration}ms): ${error.message}`, 'error', 'PUBLICIDAD_BASE64');
+        
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error interno al procesar el archivo',
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
+    }
+});
+
+// Ruta del archivo de orden
+const ordenShowcasePath = path.join(__dirname, '../resources/showcase/orden.json');
+
+// ========================================
+// GUARDAR ORDEN DEL SHOWCASE
+// ========================================
+const guardarOrdenShowcase = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logImagen('💾 Guardando orden del showcase', 'info', 'ORDEN_SHOWCASE');
+    
+    try {
+        const { orden } = req.body;
+        
+        if (!Array.isArray(orden)) {
+            return res.status(400).json({
+                success: false,
+                message: 'El orden debe ser un array'
+            });
+        }
+        
+        logImagen(`📝 Orden recibido: ${orden.length} archivos`, 'info', 'ORDEN_SHOWCASE');
+        
+        // Guardar el orden en un archivo JSON
+        await fs.writeFile(
+            ordenShowcasePath, 
+            JSON.stringify({ 
+                orden, 
+                fecha: new Date().toISOString() 
+            }, null, 2)
+        );
+        
+        const duration = Date.now() - startTime;
+        logImagen(`✅ Orden guardado exitosamente (${duration}ms)`, 'success', 'ORDEN_SHOWCASE');
+        
+        res.json({
+            success: true,
+            message: 'Orden del showcase guardado correctamente',
+            data: { 
+                orden,
+                total: orden.length 
+            }
+        });
+        
+    } catch (error) {
+        logImagen(`❌ Error guardando orden: ${error.message}`, 'error', 'ORDEN_SHOWCASE');
+        res.status(500).json({
+            success: false,
+            message: 'Error al guardar el orden del showcase'
+        });
+    }
+});
+
+// ========================================
+// OBTENER ORDEN DEL SHOWCASE
+// ========================================
+const obtenerOrdenShowcase = asyncHandler(async (req, res) => {
+    logImagen('📋 Obteniendo orden del showcase', 'info', 'ORDEN_SHOWCASE');
+    
+    try {
+        // Verificar si existe el archivo de orden
+        if (!fsSync.existsSync(ordenShowcasePath)) {
+            logImagen('⚠️ No existe archivo de orden', 'warn', 'ORDEN_SHOWCASE');
+            return res.json({
+                success: true,
+                data: {
+                    orden: [],
+                    ordenDisponible: false
+                }
+            });
+        }
+        
+        // Leer el archivo de orden
+        const contenido = await fs.readFile(ordenShowcasePath, 'utf8');
+        const data = JSON.parse(contenido);
+        
+        logImagen(`✅ Orden cargado: ${data.orden?.length || 0} archivos`, 'success', 'ORDEN_SHOWCASE');
+        
+        res.json({
+            success: true,
+            data: {
+                orden: data.orden || [],
+                fecha: data.fecha,
+                ordenDisponible: true
+            }
+        });
+        
+    } catch (error) {
+        logImagen(`❌ Error obteniendo orden: ${error.message}`, 'error', 'ORDEN_SHOWCASE');
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener el orden del showcase'
         });
     }
 });
@@ -913,5 +1296,9 @@ module.exports = {
     eliminarImagenProducto,
 
     subirImagenPublicidadBase64,
-    subirImagenProductoBase64
+    subirImagenProductoBase64,
+    subirVideoPublicidadBase64,
+    subirArchivoPublicidadBase64,
+    guardarOrdenShowcase,
+    obtenerOrdenShowcase
 };

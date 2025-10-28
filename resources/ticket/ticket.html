@@ -147,10 +147,25 @@
 		@media print {
 			body {
 				padding: 0;
+				margin: 0;
 			}
-			
+
 			.bill-container {
 				width: 8cm;
+				max-width: 8cm;
+				margin: 0;
+				padding: 0;
+			}
+
+			/* Ocultar elementos innecesarios al imprimir */
+			.qr-container {
+				display: none;
+			}
+
+			/* Optimizar para impresoras térmicas */
+			@page {
+				size: 80mm auto;
+				margin: 0;
 			}
 		}
 	</style>
@@ -238,8 +253,21 @@
 		</div>
 	</div>
 
-	<!-- Script para generar QR si se necesita -->
+	<!-- Script para impresión automática -->
 	<script>
+		// Esperar a que la página cargue completamente
+		window.addEventListener('load', function() {
+			// Pequeño delay para asegurar que todo esté renderizado
+			setTimeout(function() {
+				// Abrir diálogo de impresión automáticamente
+				window.print();
+
+				// Opcional: Cerrar la ventana después de imprimir o cancelar
+				// Descomenta la siguiente línea si quieres que se cierre automáticamente
+				// window.onafterprint = function() { window.close(); };
+			}, 500);
+		});
+
 		// Aquí podrías agregar lógica para generar QR
 		// Por ejemplo, usando una librería como qrcode.js
 	</script>

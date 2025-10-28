@@ -143,6 +143,14 @@ router.put('/horarios/dia', horariosController.actualizarHorarioDia);
 router.post('/horarios/excepcion', horariosController.agregarExcepcion);
 router.delete('/horarios/excepcion/:id', horariosController.eliminarExcepcion);
 router.get('/horarios/estado', horariosController.verificarEstadoActual);
+// En la sección de imágenes, agregar:
+router.post('/subir-video-publicidad-base64', imagenController.subirVideoPublicidadBase64);
+router.post('/subir-archivo-publicidad-base64', imagenController.subirArchivoPublicidadBase64);
+
+router.post('/guardar-orden-showcase', imagenController.guardarOrdenShowcase);
+router.get('/obtener-orden-showcase', imagenController.obtenerOrdenShowcase);
+
+router.get('/buscar-productos-nuevo', adminController.buscarProductosNuevo);
 
 
 // ==============================================
