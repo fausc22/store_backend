@@ -310,7 +310,14 @@ const pedidosPendientes = asyncHandler(async (req, res) => {
 
 const pedidosPendientesCheck = asyncHandler(async (req, res) => {
     try {
-        const ultimo_id = parseInt(req.query.ultimo_id) || 0;
+        // 🔑 CRÍTICO: Parsear correctamente el ultimo_id recibido
+        // Si es undefined, null, NaN o string vacía, usar 0
+        let ultimo_id = parseInt(req.query.ultimo_id);
+        if (isNaN(ultimo_id) || ultimo_id === null || ultimo_id === undefined) {
+            ultimo_id = 0;
+        }
+
+        console.log(`🔍 [BACKEND] Verificando pedidos. Ultimo_id recibido: ${ultimo_id} (tipo: ${typeof ultimo_id})`);
 
         const query = `
             SELECT
@@ -331,24 +338,51 @@ const pedidosPendientesCheck = asyncHandler(async (req, res) => {
 
         const results = await executeQuery(query, [], 'PEDIDOS_CHECK');
 
-        // Verificar si hay un nuevo pedido (ID mayor al último conocido)
-        if (results.length > 0 && results[0].id_pedido > ultimo_id) {
-            console.log(`🚨 NUEVO PEDIDO DETECTADO: #${results[0].id_pedido} (anterior: #${ultimo_id})`);
+        console.log(`📊 [BACKEND] Pedidos encontrados: ${results.length}`);
 
-            res.json({
-                nuevo_pedido: true,
-                pedido: results[0]
-            });
-        } else {
-            // No hay nuevos pedidos
+        // 🔑 CRÍTICO: Si no hay pedidos, retornar inmediatamente sin nuevos pedidos
+        if (results.length === 0) {
+            console.log(`✅ [BACKEND] No hay pedidos pendientes`);
             res.json({
                 nuevo_pedido: false,
                 ultimo_id: ultimo_id
             });
+            return;
+        }
+
+        // 🔑 CRÍTICO: Obtener el ID del pedido más reciente de forma segura
+        const pedidoActual = results[0];
+        const pedidoActualId = parseInt(pedidoActual.id_pedido);
+
+        console.log(`📋 [BACKEND] Pedido más reciente: #${pedidoActualId}, Cliente: ${pedidoActual.cliente}`);
+
+        // 🔑 CRÍTICO: Determinar si es un pedido nuevo
+        // Un pedido es nuevo si su ID es MAYOR que el ultimo_id conocido
+        const esNuevoPedido = pedidoActualId > ultimo_id;
+
+        console.log(`🔢 [BACKEND] Comparación: ${pedidoActualId} > ${ultimo_id} = ${esNuevoPedido}`);
+
+        if (esNuevoPedido) {
+            console.log(`🚨 [BACKEND] NUEVO PEDIDO DETECTADO: #${pedidoActualId} (anterior: #${ultimo_id})`);
+
+            res.json({
+                nuevo_pedido: true,
+                pedido: pedidoActual,
+                ultimo_id: pedidoActualId
+            });
+        } else {
+            // No hay nuevos pedidos - El pedido actual es el mismo que el último conocido
+            console.log(`✅ [BACKEND] Sin nuevos pedidos. Actual: #${pedidoActualId}, Último conocido: #${ultimo_id}`);
+
+            res.json({
+                nuevo_pedido: false,
+                // 🔑 Retornar el ID actual para que el frontend lo actualice
+                ultimo_id: pedidoActualId
+            });
         }
 
     } catch (error) {
-        console.error(`❌ Error en check de pedidos:`, error);
+        console.error(`❌ [BACKEND] Error en check de pedidos:`, error);
         res.status(500).json({
             error: 'Error al verificar pedidos',
             timestamp: new Date().toISOString()
