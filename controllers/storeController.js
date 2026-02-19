@@ -135,6 +135,8 @@ const articulosOferta = asyncHandler(async (req, res) => {
             WHERE at.cat = '1' 
             AND at.activo = 1 
             AND a.HABILITADO = 'S'
+            AND at.PRECIO > 0
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             AND (at.fecha_fin IS NULL OR at.fecha_fin > NOW())
             ORDER BY at.orden ASC, at.fecha_inicio DESC;
         `;
@@ -177,6 +179,15 @@ const articulosDestacados = asyncHandler(async (req, res) => {
             WHERE at.cat = '2' 
             AND at.activo = 1 
             AND a.HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             AND (at.fecha_fin IS NULL OR at.fecha_fin > NOW())
             ORDER BY at.orden ASC, at.fecha_inicio DESC;
         `;
@@ -218,6 +229,15 @@ const articulosLiquidacion = asyncHandler(async (req, res) => {
             WHERE at.cat = '3' 
             AND at.activo = 1 
             AND a.HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             AND (at.fecha_fin IS NULL OR at.fecha_fin > NOW())
             ORDER BY at.orden ASC, at.fecha_inicio DESC
             LIMIT 6;
@@ -249,18 +269,12 @@ const productosMain = asyncHandler(async (req, res) => {
         const precioColumn = getPrecioColumn();
         console.log('Usando columna de precio:', precioColumn);
 
+        // CountQuery: Contar TODOS los productos habilitados, sin filtros de precio/stock
+        // Esto da el total real de productos disponibles
         const countQuery = `
             SELECT COUNT(*) as total 
             FROM articulo 
-            WHERE HABILITADO = 'S' 
-            AND (
-                CASE 
-                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
-                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
-                    WHEN COD_IVA = 2 THEN precio_sin_iva_4 
-                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
-                END
-            ) > 0
+            WHERE HABILITADO = 'S'
         `;
 
 const productosQuery = `
@@ -291,7 +305,7 @@ const productosQuery = `
                 ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
             END
         ) > 0
-        AND STOCK >= STOCK_MIN
+        AND CAST(COALESCE(STOCK, '0') AS UNSIGNED) > 0
         ORDER BY art_desc_vta ASC 
         LIMIT ${limit} OFFSET ${offset}
     `;
@@ -339,11 +353,35 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
      try {
         const precioColumn = getPrecioColumn();
 
+        // Primero obtener el DAT_CLASIF del depto seleccionado
+        const deptoQuery = `
+            SELECT DAT_CLASIF 
+            FROM clasif 
+            WHERE NOM_CLASIF = ? AND COD_CLASIF = '1'
+            LIMIT 1
+        `;
+        const deptoResult = await executeQuery(deptoQuery, [categoryName], 'GET_DEPTO');
+        
+        if (!deptoResult || deptoResult.length === 0) {
+            return res.status(404).json({ 
+                error: 'Categoría no encontrada',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        const deptoDatClasif = deptoResult[0].DAT_CLASIF;
+        
+        // Buscar productos donde COD_DPTO, COD_RUBRO o COD_SUBRUBRO empiecen con el DAT_CLASIF del depto
+        // Esto incluye productos directamente en el depto, en sus rubros y en sus subrubros
         const countQuery = `
-            SELECT COUNT(*) as total 
+            SELECT COUNT(DISTINCT ar.CODIGO_BARRA) as total 
             FROM articulo ar 
-            INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
-            WHERE c.NOM_CLASIF = ? AND ar.HABILITADO = 'S'
+            WHERE ar.HABILITADO = 'S'
+            AND (
+                ar.COD_DPTO = ? 
+                OR ar.COD_RUBRO LIKE CONCAT(?, '%')
+                OR ar.COD_SUBRUBRO LIKE CONCAT(?, '%')
+            )
             AND (
                 CASE 
                     WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
@@ -352,10 +390,11 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
                     ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
                 END
             ) > 0
+            AND CAST(COALESCE(ar.STOCK, '0') AS UNSIGNED) > 0
         `;
 
         const productosQuery = `
-            SELECT 
+            SELECT DISTINCT
                 ar.CODIGO_BARRA,
                 ar.COD_INTERNO,
                 ar.COD_IVA,
@@ -368,14 +407,19 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
                 ar.COSTO,
                 ar.porc_impint,
                 ar.COD_DPTO,
+                ar.COD_RUBRO,
+                ar.COD_SUBRUBRO,
                 ar.PESABLE,
                 ar.STOCK,
                 ar.art_desc_vta,
-                c.NOM_CLASIF as categoria_nombre
+                ? as categoria_nombre
             FROM articulo ar 
-            INNER JOIN clasif c ON c.DAT_CLASIF = ar.COD_DPTO AND c.COD_CLASIF = 1
-            WHERE c.NOM_CLASIF = ? 
-            AND ar.HABILITADO = 'S'
+            WHERE ar.HABILITADO = 'S'
+            AND (
+                ar.COD_DPTO = ? 
+                OR ar.COD_RUBRO LIKE CONCAT(?, '%')
+                OR ar.COD_SUBRUBRO LIKE CONCAT(?, '%')
+            )
             AND (
                 CASE 
                     WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
@@ -384,14 +428,14 @@ const filtradoCategorias = asyncHandler(async (req, res) => {
                     ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
                 END
             ) > 0
-            AND STOCK >= STOCK_MIN
+            AND CAST(COALESCE(ar.STOCK, '0') AS UNSIGNED) > 0
             ORDER BY ar.art_desc_vta ASC
             LIMIT ${limit} OFFSET ${offset}
         `;
 
         const [countResult, products] = await Promise.all([
-            executeQuery(countQuery, [categoryName], 'COUNT_CATEGORIA'),
-            executeQuery(productosQuery, [categoryName], 'FILTRO_CATEGORIA')
+            executeQuery(countQuery, [deptoDatClasif, deptoDatClasif, deptoDatClasif], 'COUNT_CATEGORIA'),
+            executeQuery(productosQuery, [categoryName, deptoDatClasif, deptoDatClasif, deptoDatClasif], 'FILTRO_CATEGORIA')
         ]);
 
         const totalCount = countResult[0].total;
@@ -474,6 +518,7 @@ const buscarProductos = asyncHandler(async (req, res) => {
                     ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
                 END
             ) > 0
+            AND CAST(COALESCE(STOCK, '0') AS UNSIGNED) >= CAST(COALESCE(STOCK_MIN, '0') AS UNSIGNED)
         `;
 
         const productosQuery = `
@@ -504,7 +549,7 @@ const buscarProductos = asyncHandler(async (req, res) => {
                     ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
                 END
             ) > 0
-            AND STOCK >= STOCK_MIN
+            AND CAST(COALESCE(STOCK, '0') AS UNSIGNED) > 0
             ORDER BY 
                 CASE 
                     WHEN art_desc_vta LIKE ? THEN 1
@@ -582,7 +627,7 @@ const buscarProductos = asyncHandler(async (req, res) => {
 });
 
 
-// OBTENER CATEGORÍAS OPTIMIZADA
+// OBTENER CATEGORÍAS OPTIMIZADA (incluyendo productos de rubros y subrubros)
 const obtenerCategorias = asyncHandler(async (req, res) => {
     const startTime = Date.now();
     logController('Obteniendo categorías', 'info', 'CATEGORIAS');
@@ -592,11 +637,28 @@ const obtenerCategorias = asyncHandler(async (req, res) => {
             SELECT 
                 c.id_clasif,
                 c.NOM_CLASIF,
-                COUNT(a.COD_INTERNO) as cantidad_productos
+                c.DAT_CLASIF,
+                COUNT(DISTINCT a.CODIGO_BARRA) as cantidad_productos
             FROM clasif c
-            LEFT JOIN articulo a ON c.DAT_CLASIF = a.COD_DPTO AND a.HABILITADO = 'S'
-            WHERE c.COD_CLASIF = 1 
-            GROUP BY c.id_clasif, c.NOM_CLASIF
+            LEFT JOIN articulo a ON (
+                a.HABILITADO = 'S'
+                AND (
+                    a.COD_DPTO = c.DAT_CLASIF
+                    OR a.COD_RUBRO LIKE CONCAT(c.DAT_CLASIF, '%')
+                    OR a.COD_SUBRUBRO LIKE CONCAT(c.DAT_CLASIF, '%')
+                )
+                AND (
+                    CASE 
+                        WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                        ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    END
+                ) > 0
+                AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
+            )
+            WHERE c.COD_CLASIF = '1' 
+            GROUP BY c.id_clasif, c.NOM_CLASIF, c.DAT_CLASIF
             HAVING cantidad_productos > 0
             ORDER BY c.NOM_CLASIF ASC
         `;
@@ -611,6 +673,202 @@ const obtenerCategorias = asyncHandler(async (req, res) => {
         logController(`❌ Error obteniendo categorías: ${error.message}`, 'error', 'CATEGORIAS');
         res.status(500).json({ 
             error: 'Error obteniendo categorías',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// OBTENER RUBROS DE UN DEPTO ESPECÍFICO
+const obtenerRubrosDeDepto = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    const deptoName = req.params.deptoName;
+    
+    logController(`Obteniendo rubros del depto: ${deptoName}`, 'info', 'RUBROS');
+    
+    if (!deptoName || deptoName.trim().length === 0) {
+        return res.status(400).json({ 
+            error: 'Nombre de departamento requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    try {
+        // Primero obtener el DAT_CLASIF del depto
+        const deptoQuery = `
+            SELECT DAT_CLASIF 
+            FROM clasif 
+            WHERE NOM_CLASIF = ? AND COD_CLASIF = '1'
+            LIMIT 1
+        `;
+        const deptoResult = await executeQuery(deptoQuery, [deptoName], 'GET_DEPTO');
+        
+        if (!deptoResult || deptoResult.length === 0) {
+            return res.status(404).json({ 
+                error: 'Departamento no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        const deptoDatClasif = deptoResult[0].DAT_CLASIF;
+        
+        // Obtener rubros (COD_CLASIF = '2') que empiecen con el DAT_CLASIF del depto
+        // y que tengan productos asociados
+        // Los rubros directos tienen exactamente 3 dígitos más que el depto
+        // Ejemplo: depto "011" -> rubros "011001", "011002", etc.
+        const rubrosQuery = `
+            SELECT DISTINCT
+                c.id_clasif,
+                c.NOM_CLASIF,
+                c.DAT_CLASIF,
+                COUNT(DISTINCT a.CODIGO_BARRA) as cantidad_productos
+            FROM clasif c
+            LEFT JOIN articulo a ON (
+                a.COD_RUBRO = c.DAT_CLASIF
+                AND a.HABILITADO = 'S'
+                AND (
+                    CASE 
+                        WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                        WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                        ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    END
+                ) > 0
+                AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
+            )
+            WHERE c.COD_CLASIF = '2' 
+            AND c.DAT_CLASIF LIKE CONCAT(?, '%')
+            AND c.DAT_CLASIF != ?
+            AND LENGTH(c.DAT_CLASIF) = LENGTH(?) + 3
+            GROUP BY c.id_clasif, c.NOM_CLASIF, c.DAT_CLASIF
+            HAVING cantidad_productos > 0
+            ORDER BY c.NOM_CLASIF ASC
+        `;
+        
+        const results = await executeQuery(rubrosQuery, [deptoDatClasif, deptoDatClasif, deptoDatClasif], 'RUBROS');
+        
+        const duration = Date.now() - startTime;
+        logController(`✅ ${results.length} rubros obtenidos para ${deptoName} (${duration}ms)`, 'success', 'RUBROS');
+        
+        res.json(results);
+    } catch (error) {
+        logController(`❌ Error obteniendo rubros: ${error.message}`, 'error', 'RUBROS');
+        res.status(500).json({ 
+            error: 'Error obteniendo rubros',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// FILTRAR PRODUCTOS POR RUBRO ESPECÍFICO
+const filtradoPorRubro = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    const rubroName = req.params.rubroName;
+    
+    const { page, limit, offset } = getParametersFromRequest(req);
+    
+    logController(`Filtrando por rubro: ${rubroName} - Página ${page}`, 'info', 'FILTRO_RUBRO');
+    
+    if (!rubroName || rubroName.trim().length === 0) {
+        return res.status(400).json({ 
+            error: 'Nombre de rubro requerido',
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    try {
+        // Obtener el DAT_CLASIF del rubro
+        const rubroQuery = `
+            SELECT DAT_CLASIF 
+            FROM clasif 
+            WHERE NOM_CLASIF = ? AND COD_CLASIF = '2'
+            LIMIT 1
+        `;
+        const rubroResult = await executeQuery(rubroQuery, [rubroName], 'GET_RUBRO');
+        
+        if (!rubroResult || rubroResult.length === 0) {
+            return res.status(404).json({ 
+                error: 'Rubro no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        const rubroDatClasif = rubroResult[0].DAT_CLASIF;
+        
+        // Buscar productos donde COD_RUBRO = rubroDatClasif o COD_SUBRUBRO empiece con rubroDatClasif
+        const countQuery = `
+            SELECT COUNT(DISTINCT ar.CODIGO_BARRA) as total 
+            FROM articulo ar 
+            WHERE ar.HABILITADO = 'S'
+            AND (
+                ar.COD_RUBRO = ? 
+                OR ar.COD_SUBRUBRO LIKE CONCAT(?, '%')
+            )
+            AND (
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN ar.precio_sin_iva_4
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(ar.STOCK, '0') AS UNSIGNED) > 0
+        `;
+
+        const productosQuery = `
+            SELECT DISTINCT
+                ar.CODIGO_BARRA,
+                ar.COD_INTERNO,
+                ar.COD_IVA,
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN ar.precio_sin_iva_4
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END AS PRECIO,
+                ar.COSTO,
+                ar.porc_impint,
+                ar.COD_DPTO,
+                ar.COD_RUBRO,
+                ar.COD_SUBRUBRO,
+                ar.PESABLE,
+                ar.STOCK,
+                ar.art_desc_vta,
+                ? as rubro_nombre
+            FROM articulo ar 
+            WHERE ar.HABILITADO = 'S'
+            AND (
+                ar.COD_RUBRO = ? 
+                OR ar.COD_SUBRUBRO LIKE CONCAT(?, '%')
+            )
+            AND (
+                CASE 
+                    WHEN ar.COD_IVA = 0 THEN round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 1 THEN round(ar.precio_sin_iva_4 * 1.105, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    WHEN ar.COD_IVA = 2 THEN round(ar.precio_sin_iva_4, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                    ELSE round(ar.precio_sin_iva_4 * 1.21, 2) + round(ar.costo * ar.porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(ar.STOCK, '0') AS UNSIGNED) > 0
+            ORDER BY ar.art_desc_vta ASC
+            LIMIT ${limit} OFFSET ${offset}
+        `;
+
+        const [countResult, products] = await Promise.all([
+            executeQuery(countQuery, [rubroDatClasif, rubroDatClasif], 'COUNT_RUBRO'),
+            executeQuery(productosQuery, [rubroName, rubroDatClasif, rubroDatClasif], 'FILTRO_RUBRO')
+        ]);
+
+        const totalCount = countResult[0].total;
+        const response = createPaginatedResponse(products, page, limit, totalCount);
+        
+        const duration = Date.now() - startTime;
+        logController(`✅ ${products.length} productos del rubro "${rubroName}" obtenidos (${duration}ms) - Página ${page}/${response.pagination.totalPages}`, 'success', 'FILTRO_RUBRO');
+        
+        res.json(response);
+    } catch (error) {
+        logController(`❌ Error filtrando rubro "${rubroName}": ${error.message}`, 'error', 'FILTRO_RUBRO');
+        res.status(500).json({ 
+            error: 'Error filtrando por rubro',
             timestamp: new Date().toISOString()
         });
     }
@@ -653,7 +911,7 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                 FROM articulo a
                 LEFT JOIN articulo_temp at ON a.CODIGO_BARRA = at.CODIGO_BARRA AND at.activo = 1
                 WHERE a.HABILITADO = 'S'
-                AND a.STOCK >= a.STOCK_MIN
+                AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
                 AND (
                     CASE 
                         WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
@@ -812,7 +1070,7 @@ const articulosCheckout = asyncHandler(async (req, res) => {
             
             WHERE a.HABILITADO = 'S'
             AND a.CODIGO_BARRA NOT IN (${placeholders})  -- Excluir productos ya en carrito
-            AND a.STOCK >= a.STOCK_MIN
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) >= CAST(COALESCE(a.STOCK_MIN, '0') AS UNSIGNED)
             AND (
                 CASE 
                     WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
@@ -883,7 +1141,7 @@ const articulosCheckout = asyncHandler(async (req, res) => {
                 FROM articulo a
                 LEFT JOIN articulo_temp at ON a.CODIGO_BARRA = at.CODIGO_BARRA AND at.activo = 1
                 WHERE a.HABILITADO = 'S'
-                AND a.STOCK >= a.STOCK_MIN
+                AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) >= CAST(COALESCE(a.STOCK_MIN, '0') AS UNSIGNED)
                 ORDER BY 
                     CASE WHEN es_oferta_destacado IS NOT NULL THEN 0 ELSE 1 END,
                     RAND()
@@ -1170,7 +1428,8 @@ const createPreference = asyncHandler(async (req, res) => {
                 {
                     title: `Compra de ${nombreTiendaMP}`,
                     quantity: 1,
-                    unit_price: Number(total),
+                    //unit_price: Number(total),  
+                    unit_price: 1,
                     currency_id: "ARS"
                 }
             ],
@@ -1179,9 +1438,9 @@ const createPreference = asyncHandler(async (req, res) => {
             },
             statement_descriptor: nombreTiendaMP.substring(0, 22),
             back_urls: {
-                success: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=success",
-                failure: "https://vps-5234411-x.dattaweb.com/tienda/pago-rechazado?status=failure", 
-                pending: "https://vps-5234411-x.dattaweb.com/tienda/confirmacion?status=pending"
+                success: "https://mycarrito.com.ar/puntosur/confirmacion?status=success",
+                failure: "https://mycarrito.com.ar/puntosur/pago-rechazado?status=failure", 
+                pending: "https://mycarrito.com.ar/puntosur/confirmacion?status=pending"
             },
             auto_return: "approved",
             payment_methods: {
@@ -1190,7 +1449,6 @@ const createPreference = asyncHandler(async (req, res) => {
                     { id: "credit_card" }  // Excluye todas las tarjetas de crédito
                 ],
                 // ⚠️ ELIMINAR CUOTAS (solo aplican a crédito)
-                // installments: 12  // <-- QUITAR ESTA LÍNEA
                 installments: 1  // Solo pago en 1 cuota (débito/efectivo)
             },
             external_reference: `pedido_${Date.now()}`
@@ -1442,21 +1700,22 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
                                    .replace(/{{storeMail}}/g, storeMail)
                                    .replace(/{{storePhone}}/g, storePhone);
 
-        let transporter = nodemailer.createTransport({
-            host: 'smtp.gmail.com',
-            port: 587,
-            secure: false,
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS,
-            },
-            tls: {
-                rejectUnauthorized: false,
-            }
-        });
-
+                                   let transporter = nodemailer.createTransport({
+                                    host: 'mail.mycarrito.com.ar',
+                                    port: 587, // usa STARTTLS
+                                    secure: false, // true solo si usás el 465
+                                    auth: {
+                                      user: process.env.EMAIL_USER, // ej: puntosur@mail.mycarrito.com.ar
+                                      pass: process.env.EMAIL_PASS,
+                                    },
+                                    tls: {
+                                      rejectUnauthorized: false,
+                                    },
+                                  });
+         
+        const storeMostrarNuevo = process.env.EMAIL_USER;
         await transporter.sendMail({
-            from: `${storeName} <${storeMail}>`,
+            from: `${storeName} <${storeMostrarNuevo}>`,
             to: clientMail,
             subject: 'Pedido realizado con éxito!',
             html: htmlTemplate,
@@ -1490,6 +1749,7 @@ const MailPedidoRealizado = asyncHandler(async (req, res) => {
 // ==============================================
 
 const showcasePath = path.join(__dirname, "../resources/showcase");
+const publicidadPath = path.join(__dirname, "../resources/showcase"); // Mismo directorio que showcase
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, publicidadPath);
@@ -2431,8 +2691,10 @@ module.exports = {
     articulosLiquidacion,
     productosMain,
     filtradoCategorias,
+    filtradoPorRubro,
     buscarProductos,
     obtenerCategorias,
+    obtenerRubrosDeDepto,
     articulosCheckout,
     enviarCarrito,
     obtenerCarrito,

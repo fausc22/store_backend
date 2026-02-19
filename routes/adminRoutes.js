@@ -28,6 +28,16 @@ router.post('/saveConfig', adminController.saveConfig);
 router.get('/variablesenv', adminController.variablesEnv);
 
 // ==============================================
+// RUTAS DE GESTIÓN DE USUARIOS (CRUD)
+// Solo accesible para usuarios con rol admin
+// ==============================================
+
+router.get('/usuarios', adminController.verificarAdmin, adminController.listarUsuarios);
+router.post('/usuarios', adminController.verificarAdmin, adminController.crearUsuario);
+router.put('/usuarios/:id/password', adminController.verificarAdmin, adminController.actualizarPasswordUsuario);
+router.delete('/usuarios/:id', adminController.verificarAdmin, adminController.eliminarUsuario);
+
+// ==============================================
 // RUTAS DE GESTIÓN DE PEDIDOS
 // ==============================================
 
@@ -70,6 +80,9 @@ router.get('/productos-busqueda-avanzada/:filtrosEncoded', adminController.busca
 
 // Gestión de stock específica
 router.put('/producto/:codigo/stock', adminController.actualizarStockProducto);
+
+// Actualización masiva de artículos desde JSON
+router.post('/art-json', adminController.actualizarArticulosDesdeJSON);
 
 // Utilidades de productos
 router.get('/categorias', adminController.obtenerCategoriasAdmin);

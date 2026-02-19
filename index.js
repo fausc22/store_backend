@@ -33,29 +33,52 @@ const logApp = (message, level = 'info', module = 'APP') => {
 // CONFIGURACIÓN DE CORS MEJORADA
 // ==============================================
 const allowedOrigins = [
-    'http://localhost:3000/',
+    // Desarrollo local
     'http://localhost:3000',
-    'http://localhost:3001/',
+    'http://localhost:3000/',
     'http://localhost:3001',
+    'http://localhost:3001/',
+    
+    // Servidor VPS
+    'https://vps-5234411-x.dattaweb.com',
     'https://vps-5234411-x.dattaweb.com/',
-    'https://vps-5234411-x.dattaweb.com'
+    
+    // Dominio de producción - Tienda y Panel (mismo dominio base)
+    'https://mycarrito.com.ar',
+    'https://mycarrito.com.ar/',
+    'https://www.mycarrito.com.ar',
+    'https://www.mycarrito.com.ar/',
+    
+    // Dominio anterior (por compatibilidad)
+    'https://tienda-puntosur.vercel.app',
+    'https://tienda-puntosur.vercel.app/'
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
         // Permitir requests sin origin (mobile apps, postman, etc.)
-        if (!origin) return callback(null, true);
+        if (!origin) {
+            logApp(`✅ CORS permitido para request sin origin`, 'info', 'CORS');
+            return callback(null, true);
+        }
         
-        if (allowedOrigins.includes(origin)) {
+        // Normalizar el origin (remover trailing slash para comparación)
+        const normalizedOrigin = origin.replace(/\/$/, '');
+        const normalizedAllowed = allowedOrigins.map(o => o.replace(/\/$/, ''));
+        
+        if (normalizedAllowed.includes(normalizedOrigin)) {
+            // Devolver el origin original de la request para que se use en el header
             logApp(`✅ CORS permitido para origen: ${origin}`, 'info', 'CORS');
+            // Devolver true permite que cors middleware use el origin de la request
             callback(null, true);
         } else {
             logApp(`❌ CORS bloqueado para origen: ${origin}`, 'warn', 'CORS');
-            callback(new Error('No permitido por CORS'));
+            logApp(`   Orígenes permitidos: ${normalizedAllowed.join(', ')}`, 'info', 'CORS');
+            callback(new Error(`Origen ${origin} no permitido por CORS`));
         }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
     credentials: true,
     optionsSuccessStatus: 200 // Para soportar navegadores legacy
 };
@@ -121,6 +144,31 @@ logApp('✅ Configuración de sesiones aplicada', 'success', 'SESSION');
 // ==============================================
 // MIDDLEWARE DE PARSING
 // ==============================================
+// Middleware para limpiar JSON con trailing commas (solo para rutas específicas)
+// Debe ejecutarse ANTES de express.json()
+app.use('/admin/art-json', express.raw({ type: 'application/json', limit: '10mb' }), (req, res, next) => {
+    try {
+        const bodyString = req.body.toString('utf8');
+        // Limpiar trailing commas: eliminar comas antes de } o ]
+        const cleaned = bodyString
+            .replace(/,(\s*})/g, '$1')  // Eliminar comas antes de }
+            .replace(/,(\s*])/g, '$1'); // Eliminar comas antes de ]
+        
+        // Parsear el JSON limpio y asignarlo al body
+        req.body = JSON.parse(cleaned);
+        // Marcar como ya procesado para que express.json() lo ignore
+        req._body = true;
+        next();
+    } catch (error) {
+        logApp(`❌ Error limpiando/parseando JSON: ${error.message}`, 'error', 'JSON_CLEANER');
+        return res.status(400).json({
+            error: 'JSON inválido',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
 app.use(express.json({ 
     limit: '10mb',
     verify: (req, res, buf, encoding) => {

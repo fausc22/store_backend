@@ -26,6 +26,7 @@ router.get('/articulosDEST', storeController.articulosDestacados);
 router.get('/productosMAIN/:page?/:limit?', storeController.productosMain);
 router.get('/buscar/:searchTerm/:page?/:limit?', storeController.buscarProductos);
 router.get('/articulos/:categoryId/:page?/:limit?', storeController.filtradoCategorias);
+router.get('/rubro/:rubroName/:page?/:limit?', storeController.filtradoPorRubro);
 
 // Productos principales (sin paginación - alias)
 router.get('/productosMAIN', storeController.productosMain);
@@ -34,6 +35,7 @@ router.get('/buscar', storeController.buscarProductos);
 
 // Categorías y productos relacionados
 router.get('/categorias', storeController.obtenerCategorias);
+router.get('/rubros/:deptoName', storeController.obtenerRubrosDeDepto);
 router.get('/articulosCheckout', storeController.articulosCheckout);
 
 // ==============================================

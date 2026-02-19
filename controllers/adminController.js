@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs').promises;
 const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // ==============================================
@@ -85,32 +87,63 @@ const loginCheck = asyncHandler(async (req, res) => {
     }
 
     try {
-        const usernameEnv = process.env.USER_NAME;
-        const passwordEnv = process.env.PASSWORD;
+        // Buscar usuario en la base de datos
+        const usuarios = await executeQuery(
+            'SELECT id, usuario, password, rol FROM usuarios WHERE usuario = ?',
+            [username],
+            'LOGIN_CHECK'
+        );
 
-        if (!usernameEnv || !passwordEnv) {
-            logAdmin('Error: Variables de entorno de autenticación no configuradas', 'error', 'AUTH');
-            return res.status(500).json({ 
-                message: 'Error de configuración del servidor',
-                timestamp: new Date().toISOString()
-            });
-        }
-
-        // Validar credenciales
-        if (username !== usernameEnv || password !== passwordEnv) {
+        if (!usuarios || usuarios.length === 0) {
             const duration = Date.now() - startTime;
-            logAdmin(`Login fallido para ${username} (${duration}ms)`, 'warn', 'AUTH');
+            logAdmin(`Login fallido para ${username}: Usuario no encontrado (${duration}ms)`, 'warn', 'AUTH');
             return res.status(401).json({ 
                 message: 'Usuario o contraseña incorrectos',
                 timestamp: new Date().toISOString()
             });
         }
 
+        const usuario = usuarios[0];
+
+        // Verificar contraseña con bcrypt
+        const passwordMatch = await bcrypt.compare(password, usuario.password);
+
+        if (!passwordMatch) {
+            const duration = Date.now() - startTime;
+            logAdmin(`Login fallido para ${username}: Contraseña incorrecta (${duration}ms)`, 'warn', 'AUTH');
+            return res.status(401).json({ 
+                message: 'Usuario o contraseña incorrectos',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // Generar JWT con el rol del usuario
+        // Si rememberMe está activado, el token dura 7 días, sino 4 horas
+        const rememberMe = req.body.rememberMe !== false; // Por defecto true
+        const expiresIn = rememberMe ? '7d' : '4h';
+        
+        const JWT_SECRET = process.env.JWT_SECRET || 'tu_secret_key_cambiar_en_produccion';
+        const token = jwt.sign(
+            { 
+                id: usuario.id,
+                usuario: usuario.usuario,
+                rol: usuario.rol
+            },
+            JWT_SECRET,
+            { expiresIn: expiresIn }
+        );
+
         const duration = Date.now() - startTime;
-        logAdmin(`✅ Login exitoso para ${username} (${duration}ms)`, 'success', 'AUTH');
+        logAdmin(`✅ Login exitoso para ${username} (rol: ${usuario.rol}) (${duration}ms)`, 'success', 'AUTH');
         
         res.json({ 
             message: 'Login exitoso',
+            token: token,
+            usuario: {
+                id: usuario.id,
+                usuario: usuario.usuario,
+                rol: usuario.rol
+            },
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -122,6 +155,47 @@ const loginCheck = asyncHandler(async (req, res) => {
         });
     }
 });
+
+// Middleware simple para verificar que el usuario sea admin
+const verificarAdmin = (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ 
+                message: 'Token de autenticación requerido',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const token = authHeader.substring(7); // Remover "Bearer "
+        const JWT_SECRET = process.env.JWT_SECRET || 'tu_secret_key_cambiar_en_produccion';
+        
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            if (decoded.rol !== 'admin') {
+                logAdmin(`Acceso denegado: Usuario ${decoded.usuario} (rol: ${decoded.rol}) intentó acceder a endpoint admin`, 'warn', 'AUTH');
+                return res.status(403).json({ 
+                    message: 'Acceso denegado: Se requiere rol de administrador',
+                    timestamp: new Date().toISOString()
+                });
+            }
+            req.user = decoded; // Agregar usuario decodificado al request
+            next();
+        } catch (jwtError) {
+            logAdmin(`Token inválido o expirado: ${jwtError.message}`, 'warn', 'AUTH');
+            return res.status(401).json({ 
+                message: 'Token inválido o expirado',
+                timestamp: new Date().toISOString()
+            });
+        }
+    } catch (error) {
+        logAdmin(`Error en verificación de admin: ${error.message}`, 'error', 'AUTH');
+        return res.status(500).json({ 
+            message: 'Error al verificar permisos',
+            timestamp: new Date().toISOString()
+        });
+    }
+};
 
 const obtenerConfig = asyncHandler(async (req, res) => {
     logAdmin('Obteniendo configuración del .env', 'info', 'CONFIG');
@@ -143,8 +217,6 @@ const obtenerConfig = asyncHandler(async (req, res) => {
             mercadoPagoToken: config.MERCADOPAGO_ACCESS_TOKEN,
             iva: config.IVA,
             pageStatus: config.PAGE_STATUS,
-            userName: config.USER_NAME,
-            passWord: config.PASSWORD,
             horaInicio: config.HORA_INICIO,
             horaFin: config.HORA_FIN
         };
@@ -191,8 +263,6 @@ const saveConfig = asyncHandler(async (req, res) => {
             ...(config.mercadoPagoToken && { MERCADOPAGO_ACCESS_TOKEN: config.mercadoPagoToken }),
             ...(config.iva && { IVA: config.iva }),
             ...(config.pageStatus && { PAGE_STATUS: config.pageStatus }),
-            ...(config.userName && { USER_NAME: config.userName }),
-            ...(config.passWord && { PASSWORD: config.passWord }),
             ...(config.horaInicio && { HORA_INICIO: config.horaInicio }),
             ...(config.horaFin && { HORA_FIN: config.horaFin })
         };
@@ -237,12 +307,6 @@ const saveConfig = asyncHandler(async (req, res) => {
         }
         if (config.pageStatus) {
             process.env.PAGE_STATUS = config.pageStatus;
-        }
-        if (config.userName) {
-            process.env.USER_NAME = config.userName;
-        }
-        if (config.passWord) {
-            process.env.PASSWORD = config.passWord;
         }
         if (config.horaInicio) {
             process.env.HORA_INICIO = config.horaInicio;
@@ -494,6 +558,19 @@ const productosPedido = asyncHandler(async (req, res) => {
     }
 });
 
+// Función auxiliar para formatear dirección (solo calle y número)
+const formatearDireccionCorta = (direccionCompleta) => {
+    if (!direccionCompleta) return '';
+    
+    // Tomar solo la primera parte antes de la primera coma
+    // Ejemplo: "Catamarca 955, General Paz, Córdoba, Argentina" -> "Catamarca 955"
+    const partes = direccionCompleta.split(',');
+    const direccionCorta = partes[0].trim();
+    
+    // Limitar a 100 caracteres por seguridad (ajusta según tu columna DB)
+    return direccionCorta.substring(0, 100);
+};
+
 const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
     const pedidoId = req.params.id;
     const { estado, notas } = req.body;
@@ -584,6 +661,11 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
             } else {
                 logAdmin(`✅ Insertando pedido ${pedidoId} en historial de carrito`, 'info', 'CARRITO');
                 
+                // Formatear dirección para que quepa en la columna de carrito
+                const direccionFormateada = formatearDireccionCorta(pedidoActual.direccion_cliente);
+                logAdmin(`📍 Dirección original: "${pedidoActual.direccion_cliente}"`, 'info', 'CARRITO');
+                logAdmin(`📍 Dirección formateada: "${direccionFormateada}"`, 'info', 'CARRITO');
+                
                 // 4.1. Insertar en tabla carrito
                 const [carritoInsert] = await connection.execute(`
                     INSERT INTO carrito (
@@ -608,7 +690,7 @@ const actualizarEstadoPedidoProcesado = asyncHandler(async (req, res) => {
                     pedidoActual.monto_total,
                     pedidoActual.fecha,
                     pedidoActual.cliente,
-                    pedidoActual.direccion_cliente,
+                    direccionFormateada,  // ✅ USAR DIRECCIÓN FORMATEADA (solo calle y número)
                     pedidoActual.telefono_cliente,
                     pedidoActual.email_cliente,
                     pedidoActual.medio_pago,
@@ -781,11 +863,34 @@ const eliminarPedido = asyncHandler(async (req, res) => {
 
 const actualizarInfoProducto = asyncHandler(async (req, res) => {
     const productoId = req.params.id;
-    const { nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria } = req.body;
+    const { 
+        nombre, 
+        art_desc_vta,
+        costo, 
+        precio, 
+        precio_sin_iva, 
+        precio_sin_iva_1,
+        precio_sin_iva_2,
+        precio_sin_iva_3,
+        precio_sin_iva_4, 
+        categoria,
+        cod_dpto,
+        cod_rubro,
+        cod_subrubro,
+        cod_interno,
+        marca,
+        stock,
+        pesable,
+        cod_iva,
+        porc_impint,
+        impuesto_interno,
+        habilitado
+    } = req.body;
     
     logAdmin(`Actualizando producto: ${productoId}`, 'info', 'PRODUCTOS');
     
-    if (!productoId || !nombre) {
+    const nombreProducto = nombre || art_desc_vta;
+    if (!productoId || !nombreProducto) {
         return res.status(400).json({ 
             error: 'ID de producto y nombre son requeridos',
             timestamp: new Date().toISOString()
@@ -793,15 +898,126 @@ const actualizarInfoProducto = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Construir query dinámicamente con todos los campos disponibles
+        const updateFields = [];
+        const updateValues = [];
+        
+        if (nombreProducto !== undefined) {
+            updateFields.push('art_desc_vta = ?');
+            updateValues.push(nombreProducto);
+            updateFields.push('NOMBRE = ?');
+            updateValues.push(nombreProducto);
+        }
+        
+        if (costo !== undefined) {
+            updateFields.push('COSTO = ?');
+            updateValues.push(parseFloat(costo) || 0);
+        }
+        
+        if (precio !== undefined) {
+            updateFields.push('PRECIO = ?');
+            updateValues.push(parseFloat(precio) || 0);
+        }
+        
+        if (precio_sin_iva !== undefined) {
+            updateFields.push('PRECIO_SIN_IVA = ?');
+            updateValues.push(parseFloat(precio_sin_iva) || 0);
+        }
+        
+        if (precio_sin_iva_1 !== undefined) {
+            updateFields.push('PRECIO_SIN_IVA_1 = ?');
+            updateValues.push(parseFloat(precio_sin_iva_1) || 0);
+        }
+        
+        if (precio_sin_iva_2 !== undefined) {
+            updateFields.push('PRECIO_SIN_IVA_2 = ?');
+            updateValues.push(parseFloat(precio_sin_iva_2) || 0);
+        }
+        
+        if (precio_sin_iva_3 !== undefined) {
+            updateFields.push('PRECIO_SIN_IVA_3 = ?');
+            updateValues.push(parseFloat(precio_sin_iva_3) || 0);
+        }
+        
+        if (precio_sin_iva_4 !== undefined) {
+            updateFields.push('PRECIO_SIN_IVA_4 = ?');
+            updateValues.push(parseFloat(precio_sin_iva_4) || 0);
+        }
+        
+        const deptoValue = cod_dpto || categoria;
+        if (deptoValue !== undefined && deptoValue !== null && deptoValue !== '') {
+            updateFields.push('COD_DPTO = ?');
+            updateValues.push(deptoValue);
+        }
+        
+        if (cod_rubro !== undefined && cod_rubro !== null && cod_rubro !== '') {
+            updateFields.push('COD_RUBRO = ?');
+            updateValues.push(cod_rubro);
+        }
+        
+        if (cod_subrubro !== undefined && cod_subrubro !== null && cod_subrubro !== '') {
+            updateFields.push('COD_SUBRUBRO = ?');
+            updateValues.push(cod_subrubro);
+        }
+        
+        if (cod_interno !== undefined) {
+            updateFields.push('COD_INTERNO = ?');
+            updateValues.push(parseInt(cod_interno) || 0);
+        }
+        
+        if (marca !== undefined) {
+            updateFields.push('marca = ?');
+            updateValues.push(marca || null);
+        }
+        
+        if (stock !== undefined) {
+            updateFields.push('STOCK = ?');
+            updateValues.push(parseInt(stock) || 0);
+        }
+        
+        if (pesable !== undefined) {
+            updateFields.push('PESABLE = ?');
+            updateValues.push(parseInt(pesable) || 0);
+        }
+        
+        if (cod_iva !== undefined) {
+            updateFields.push('COD_IVA = ?');
+            updateValues.push(parseInt(cod_iva) || 0);
+        }
+        
+        if (porc_impint !== undefined) {
+            updateFields.push('porc_impint = ?');
+            updateValues.push(parseFloat(porc_impint) || 0);
+        }
+        
+        if (impuesto_interno !== undefined) {
+            updateFields.push('impuesto_interno = ?');
+            updateValues.push(parseFloat(impuesto_interno) || 0);
+        }
+        
+        if (habilitado !== undefined) {
+            updateFields.push('HABILITADO = ?');
+            updateValues.push(habilitado);
+        }
+        
+        if (updateFields.length === 0) {
+            return res.status(400).json({ 
+                error: 'No se proporcionaron campos para actualizar',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        updateValues.push(productoId);
+        
         const query = `
             UPDATE articulo 
-            SET art_desc_vta = ?, COSTO = ?, PRECIO = ?, PRECIO_SIN_IVA = ?, PRECIO_SIN_IVA_4 = ?, COD_DPTO = ? 
+            SET ${updateFields.join(', ')}
             WHERE CODIGO_BARRA = ?
         `;
         
         const result = await executeQuery(
             query, 
-            [nombre, costo, precio, precio_sin_iva, precio_sin_iva_4, categoria, productoId],
+            updateValues,
             'UPDATE_PRODUCTO'
         );
 
@@ -1315,10 +1531,12 @@ const articulosOferta = asyncHandler(async (req, res) => {
                 at.art_desc_vta AS nombre, 
                 at.PRECIO, 
                 at.PRECIO_DESC,
-                COALESCE(a.STOCK, 0) AS STOCK
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS STOCK
             FROM articulo_temp at
             LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
             WHERE at.cat = '1' AND at.activo = 1
+            AND a.HABILITADO = 'S'
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             ORDER BY at.orden, at.fecha_inicio DESC
         `;
         
@@ -1349,10 +1567,12 @@ const articulosDest = asyncHandler(async (req, res) => {
                 at.art_desc_vta AS nombre, 
                 at.PRECIO, 
                 at.PRECIO_DESC,
-                COALESCE(a.STOCK, 0) AS STOCK
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS STOCK
             FROM articulo_temp at
             LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
             WHERE at.cat = '2' AND at.activo = 1
+            AND a.HABILITADO = 'S'
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             ORDER BY at.orden, at.fecha_inicio DESC
         `;
         
@@ -1629,20 +1849,22 @@ let emailTransporter = null;
 const getEmailTransporter = () => {
     if (!emailTransporter) {
         emailTransporter = nodemailer.createTransport({
-            host: 'smtp.gmail.com',
-            port: 587,
-            secure: false,
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS,
-            },
-            tls: {
-                rejectUnauthorized: false,
-            }
-        });
+            host: 'mail.mycarrito.com.ar',
+    port: 587, // usa STARTTLS
+    secure: false, // true solo si usás el 465
+    auth: {
+      user: process.env.EMAIL_USER, // ej: puntosur@mail.mycarrito.com.ar
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+  });
     }
     return emailTransporter;
 };
+
+
 
 const MailPedidoProcesado = asyncHandler(async (req, res) => {
     const { storeName, name, clientMail, items, subtotal, shippingCost, total, storeMail, storePhone } = req.body;
@@ -1687,9 +1909,9 @@ const MailPedidoProcesado = asyncHandler(async (req, res) => {
 
         const transporter = getEmailTransporter();
         const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
-
+        const storeMostrarNuevo = process.env.EMAIL_USER;
         await transporter.sendMail({
-            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            from: `${storeName || 'PuntoSur'} <${storeMostrarNuevo}>`,
             to: clientMail,
             subject: 'Pedido confirmado con éxito!',
             html: htmlTemplate,
@@ -1764,9 +1986,9 @@ const MailPedidoEnCamino = asyncHandler(async (req, res) => {
 
         const transporter = getEmailTransporter();
         const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
-
+        const storeMostrarNuevo = process.env.EMAIL_USER;
         await transporter.sendMail({
-            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            from: `${storeName || 'PuntoSur'} <${storeMostrarNuevo}>`,
             to: clientMail,
             subject: 'Tu pedido está en camino!',
             html: htmlTemplate,
@@ -1841,9 +2063,9 @@ const MailPedidoRetiro = asyncHandler(async (req, res) => {
 
         const transporter = getEmailTransporter();
         const logoPath = path.join(__dirname, '../resources/img/logo.jpg');
-
+        const storeMostrarNuevo = process.env.EMAIL_USER;
         await transporter.sendMail({
-            from: `${storeName || 'PuntoSur'} <${storeMail || process.env.STORE_EMAIL}>`,
+            from: `${storeName || 'PuntoSur'} <${storeMostrarNuevo}>`,
             to: clientMail,
             subject: 'Tu pedido está listo para retirar!',
             html: htmlTemplate,
@@ -2000,8 +2222,6 @@ const variablesEnv = (req, res) => {
         storeDeliveryKm: process.env.STORE_DELIVERY_KM,
         iva: process.env.IVA,
         pageStatus: process.env.PAGE_STATUS,
-        userName: process.env.USER_NAME,
-        password: process.env.PASSWORD,
         sessionSecret: process.env.SESSION_SECRET,
         openCageApiKey: process.env.OPENCAGE_API_KEY,
         mercadopagoAccessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
@@ -2037,7 +2257,7 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
                 COALESCE(a.precio_sin_iva_4, 0) AS precio_sin_iva_4,
                 a.COD_DPTO AS categoria_id,
                 COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
-                COALESCE(a.STOCK, '0') AS stock,
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS stock,
                 COALESCE(a.HABILITADO, 'S') AS habilitado,
                 COALESCE(a.marca, '') AS marca,
                 a.COD_INTERNO AS cod_interno,
@@ -2047,7 +2267,6 @@ const obtenerTodosLosProductos = asyncHandler(async (req, res) => {
             LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
             WHERE a.HABILITADO IN ('S', 'N')
             ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
-            LIMIT 1000
         `;
         
         const results = await executeQuery(query, [], 'TODOS_PRODUCTOS');
@@ -2099,7 +2318,7 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
                 ${precioSQL} AS precio,
                 a.COD_DPTO AS categoria_id,
                 COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
-                COALESCE(a.STOCK, '0') AS stock,
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS stock,
                 COALESCE(a.HABILITADO, 'S') AS habilitado,
                 COALESCE(a.marca, '') AS marca,
                 a.COD_INTERNO AS cod_interno,
@@ -2109,6 +2328,8 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
             LEFT JOIN clasif c ON c.DAT_CLASIF = a.COD_DPTO AND c.COD_CLASIF = 1
             WHERE (a.art_desc_vta LIKE ? OR a.NOMBRE LIKE ? OR a.CODIGO_BARRA LIKE ?)
             AND a.HABILITADO = 'S'
+            AND (${precioSQL}) > 0
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
             LIMIT 50
         `;
@@ -2140,20 +2361,33 @@ const buscarProductoEnPedido = asyncHandler(async (req, res) => {
 const crearProducto = asyncHandler(async (req, res) => {
     const { 
         codigo_barra, 
-        nombre, 
+        nombre,
+        art_desc_vta,
         costo, 
         precio, 
-        precio_sin_iva, 
+        precio_sin_iva,
+        precio_sin_iva_1,
+        precio_sin_iva_2,
+        precio_sin_iva_3,
         precio_sin_iva_4, 
-        categoria, 
+        categoria,
+        cod_dpto,
+        cod_rubro,
+        cod_subrubro,
+        cod_interno,
+        marca,
         stock, 
-        descripcion, 
+        pesable,
+        cod_iva,
+        porc_impint,
+        impuesto_interno,
         habilitado 
     } = req.body;
     
     logAdmin(`Creando nuevo producto: ${codigo_barra}`, 'info', 'PRODUCTOS');
     
-    if (!codigo_barra || !nombre) {
+    const nombreProducto = nombre || art_desc_vta;
+    if (!codigo_barra || !nombreProducto) {
         return res.status(400).json({ 
             error: 'Código de barra y nombre son requeridos',
             timestamp: new Date().toISOString()
@@ -2173,33 +2407,55 @@ const crearProducto = asyncHandler(async (req, res) => {
             });
         }
 
+        const deptoValue = cod_dpto || categoria || '';
+        
         const query = `
             INSERT INTO articulo (
                 CODIGO_BARRA, 
+                COD_INTERNO,
                 art_desc_vta, 
                 NOMBRE,
+                marca,
                 COSTO, 
                 PRECIO, 
-                PRECIO_SIN_IVA, 
+                PRECIO_SIN_IVA,
+                PRECIO_SIN_IVA_1,
+                PRECIO_SIN_IVA_2,
+                PRECIO_SIN_IVA_3,
                 PRECIO_SIN_IVA_4, 
-                COD_DPTO, 
-                STOCK, 
-                DESCRIPCION,
+                COD_DPTO,
+                COD_RUBRO,
+                COD_SUBRUBRO,
+                STOCK,
+                PESABLE,
+                COD_IVA,
+                porc_impint,
+                impuesto_interno,
                 HABILITADO
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const values = [
             codigo_barra,
-            nombre,
-            nombre, // NOMBRE también se llena con el mismo valor
+            parseInt(cod_interno) || 0,
+            nombreProducto,
+            nombreProducto, // NOMBRE también se llena con el mismo valor
+            marca || null,
             parseFloat(costo) || 0,
             parseFloat(precio) || 0,
             parseFloat(precio_sin_iva) || 0,
+            parseFloat(precio_sin_iva_1) || 0,
+            parseFloat(precio_sin_iva_2) || 0,
+            parseFloat(precio_sin_iva_3) || 0,
             parseFloat(precio_sin_iva_4) || 0,
-            categoria || '',
+            deptoValue,
+            cod_rubro || null,
+            cod_subrubro || null,
             parseInt(stock) || 0,
-            descripcion || '',
+            parseInt(pesable) || 0,
+            parseInt(cod_iva) || 0,
+            parseFloat(porc_impint) || 0,
+            parseFloat(impuesto_interno) || 0,
             habilitado || 'S'
         ];
 
@@ -2245,9 +2501,8 @@ const obtenerProductoPorCodigo = asyncHandler(async (req, res) => {
                 ${precioSQL} AS precio,
                 a.precio_sin_iva_4 AS precio_sin_iva_4,
                 a.COD_DPTO AS categoria,
-                a.STOCK AS stock,
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS stock,
                 a.HABILITADO AS habilitado,
-                a.DESCRIPCION AS descripcion,
                 a.COD_INTERNO AS cod_interno,
                 a.COD_IVA,
                 a.porc_impint
@@ -2336,9 +2591,22 @@ const obtenerCategoriasProductos = asyncHandler(async (req, res) => {
     
     try {
         const query = `
-            SELECT DISTINCT COD_DPTO as categoria, COUNT(*) as total_productos
+            SELECT DISTINCT 
+                COD_DPTO as categoria, 
+                COUNT(DISTINCT CODIGO_BARRA) as total_productos
             FROM articulo 
-            WHERE HABILITADO = 'S' AND COD_DPTO IS NOT NULL AND COD_DPTO != ''
+            WHERE HABILITADO = 'S' 
+            AND COD_DPTO IS NOT NULL 
+            AND COD_DPTO != ''
+            AND (
+                CASE 
+                    WHEN COD_IVA = 0 THEN round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 1 THEN round(precio_sin_iva_4 * 1.105, 2) + round(costo * porc_impint / 100, 2)
+                    WHEN COD_IVA = 2 THEN precio_sin_iva_4
+                    ELSE round(precio_sin_iva_4 * 1.21, 2) + round(costo * porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(STOCK, '0') AS UNSIGNED) > 0
             GROUP BY COD_DPTO
             ORDER BY total_productos DESC, COD_DPTO ASC
         `;
@@ -2383,11 +2651,11 @@ const obtenerEstadisticasProductos = asyncHandler(async (req, res) => {
             // Estadísticas de stock
             executeQuery(
                 `SELECT 
-                    SUM(CASE WHEN STOCK > 0 THEN 1 ELSE 0 END) as con_stock,
-                    SUM(CASE WHEN STOCK = 0 THEN 1 ELSE 0 END) as sin_stock,
-                    SUM(CASE WHEN STOCK > 0 AND STOCK <= 10 THEN 1 ELSE 0 END) as stock_bajo,
-                    SUM(STOCK) as stock_total,
-                    AVG(STOCK) as stock_promedio
+                    SUM(CASE WHEN CAST(COALESCE(STOCK, '0') AS UNSIGNED) > 0 THEN 1 ELSE 0 END) as con_stock,
+                    SUM(CASE WHEN CAST(COALESCE(STOCK, '0') AS UNSIGNED) = 0 THEN 1 ELSE 0 END) as sin_stock,
+                    SUM(CASE WHEN CAST(COALESCE(STOCK, '0') AS UNSIGNED) > 0 AND CAST(COALESCE(STOCK, '0') AS UNSIGNED) <= 10 THEN 1 ELSE 0 END) as stock_bajo,
+                    SUM(CAST(COALESCE(STOCK, '0') AS UNSIGNED)) as stock_total,
+                    AVG(CAST(COALESCE(STOCK, '0') AS UNSIGNED)) as stock_promedio
                  FROM articulo WHERE HABILITADO = 'S'`,
                 [],
                 'STATS_STOCK'
@@ -2554,24 +2822,24 @@ const buscarProductosAvanzado = asyncHandler(async (req, res) => {
                     whereConditions.push(`a.HABILITADO = 'N'`);
                     break;
                 case 'en_stock':
-                    whereConditions.push(`a.STOCK > 0`);
+                    whereConditions.push(`CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0`);
                     break;
                 case 'sin_stock':
-                    whereConditions.push(`a.STOCK = 0`);
+                    whereConditions.push(`CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) = 0`);
                     break;
                 case 'stock_bajo':
-                    whereConditions.push(`a.STOCK > 0 AND a.STOCK <= 10`);
+                    whereConditions.push(`CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0 AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) <= 10`);
                     break;
             }
         }
 
         if (stockMinimo) {
-            whereConditions.push(`a.STOCK >= ?`);
+            whereConditions.push(`CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) >= ?`);
             params.push(parseInt(stockMinimo));
         }
 
         if (stockMaximo) {
-            whereConditions.push(`a.STOCK <= ?`);
+            whereConditions.push(`CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) <= ?`);
             params.push(parseInt(stockMaximo));
         }
 
@@ -2603,9 +2871,8 @@ const buscarProductosAvanzado = asyncHandler(async (req, res) => {
                 ${precioSQL} AS precio,
                 a.precio_sin_iva_4 AS precio_sin_iva_4,
                 a.COD_DPTO AS categoria,
-                a.STOCK AS stock,
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS stock,
                 a.HABILITADO AS habilitado,
-                a.DESCRIPCION AS descripcion,
                 a.COD_INTERNO AS cod_interno,
                 a.COD_IVA,
                 a.porc_impint
@@ -2666,11 +2933,26 @@ const obtenerCategoriasAdmin = asyncHandler(async (req, res) => {
             SELECT 
                 c.id_clasif,
                 c.NOM_CLASIF,
-                COUNT(a.COD_INTERNO) as cantidad_productos
+                c.DAT_CLASIF,
+                COUNT(DISTINCT a.CODIGO_BARRA) as cantidad_productos
             FROM clasif c
-            LEFT JOIN articulo a ON c.DAT_CLASIF = a.COD_DPTO AND a.HABILITADO = 'S'
+            LEFT JOIN articulo a ON (
+                c.DAT_CLASIF = a.COD_DPTO 
+                OR a.COD_RUBRO LIKE CONCAT(c.DAT_CLASIF, '%')
+                OR a.COD_SUBRUBRO LIKE CONCAT(c.DAT_CLASIF, '%')
+            )
+            AND a.HABILITADO = 'S'
+            AND (
+                CASE 
+                    WHEN a.COD_IVA = 0 THEN round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 1 THEN round(a.precio_sin_iva_4 * 1.105, 2) + round(a.costo * a.porc_impint / 100, 2)
+                    WHEN a.COD_IVA = 2 THEN a.precio_sin_iva_4
+                    ELSE round(a.precio_sin_iva_4 * 1.21, 2) + round(a.costo * a.porc_impint / 100, 2)
+                END
+            ) > 0
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             WHERE c.COD_CLASIF = 1 
-            GROUP BY c.id_clasif, c.NOM_CLASIF
+            GROUP BY c.id_clasif, c.NOM_CLASIF, c.DAT_CLASIF
             HAVING cantidad_productos > 0
             ORDER BY c.NOM_CLASIF ASC
         `;
@@ -2704,10 +2986,12 @@ const articulosLiquidacion = asyncHandler(async (req, res) => {
                 at.art_desc_vta AS nombre, 
                 at.PRECIO, 
                 at.PRECIO_DESC,
-                COALESCE(a.STOCK, 0) AS STOCK
+                CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS STOCK
             FROM articulo_temp at
             LEFT JOIN articulo a ON at.CODIGO_BARRA = a.CODIGO_BARRA
             WHERE at.cat = '3' AND at.activo = 1
+            AND a.HABILITADO = 'S'
+            AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
             ORDER BY at.orden, at.fecha_inicio DESC
         `;
         
@@ -2870,7 +3154,275 @@ const agregarArticuloLiquidacion = asyncHandler(async (req, res) => {
     }
 });
 
+// ==============================================
+// ACTUALIZACIÓN MASIVA DE ARTÍCULOS DESDE JSON
+// ==============================================
 
+const actualizarArticulosDesdeJSON = asyncHandler(async (req, res) => {
+    const startTime = Date.now();
+    logAdmin('Iniciando actualización masiva de artículos desde JSON', 'info', 'ACTUALIZACION_MASIVA');
+    
+    try {
+        const { type, records } = req.body;
+        
+        // Validar estructura del JSON
+        if (!records || !Array.isArray(records) || records.length === 0) {
+            return res.status(400).json({
+                error: 'El JSON debe contener un array "records" con al menos un artículo',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        logAdmin(`Procesando ${records.length} artículos del tipo: ${type || 'N/A'}`, 'info', 'ACTUALIZACION_MASIVA');
+        
+        // Contadores para el resumen
+        let actualizados = 0;
+        let creados = 0;
+        let errores = 0;
+        const erroresDetalle = [];
+        
+        // Función helper para convertir valores numéricos (maneja comas como separador decimal)
+        const parseNumeric = (value) => {
+            if (value === null || value === undefined || value === '') return 0;
+            if (typeof value === 'number') return value;
+            // Reemplazar todas las comas por puntos y limpiar espacios
+            const str = String(value).trim().replace(/,/g, '.');
+            const num = parseFloat(str);
+            return isNaN(num) ? 0 : num;
+        };
+        
+        // Función helper para convertir valores enteros
+        const parseIntSafe = (value) => {
+            if (value === null || value === undefined || value === '') return 0;
+            if (typeof value === 'number') return Math.floor(value);
+            // Reemplazar todas las comas por puntos y limpiar espacios
+            const str = String(value).trim().replace(/,/g, '.');
+            const num = parseInt(str, 10);
+            return isNaN(num) ? 0 : num;
+        };
+        
+        // Procesar cada registro
+        for (const record of records) {
+            try {
+                const codigoBarra = record.codigo_barra;
+                
+                if (!codigoBarra) {
+                    errores++;
+                    erroresDetalle.push({
+                        registro: record,
+                        error: 'Código de barra faltante'
+                    });
+                    continue;
+                }
+                
+                // Preparar los valores para la actualización
+                const valores = {
+                    cod_interno: record.cod_interno ? parseIntSafe(record.cod_interno) : null,
+                    art_desc_vta: record.art_desc_vta || null,
+                    marca: record.marca || null,
+                    precio: parseNumeric(record.precio),
+                    stock: parseIntSafe(record.stock),
+                    pesable: record.pesable ? parseIntSafe(record.pesable) : 0,
+                    costo: parseNumeric(record.costo),
+                    cod_iva: record.cod_iva ? parseIntSafe(record.cod_iva) : 0,
+                    habilitado: record.habilitado || 'S',
+                    porc_impint: parseNumeric(record.porc_impint),
+                    precio_sin_iva: parseNumeric(record.precio_sin_iva),
+                    precio_sin_iva_1: parseNumeric(record.precio_sin_iva_1),
+                    precio_sin_iva_2: parseNumeric(record.precio_sin_iva_2),
+                    precio_sin_iva_3: parseNumeric(record.precio_sin_iva_3),
+                    precio_sin_iva_4: parseNumeric(record.precio_sin_iva_4),
+                    cod_dpto: (record.depto || record.cod_dpto || record.COD_DPTO) ? parseIntSafe(record.depto || record.cod_dpto || record.COD_DPTO) : null,
+                    cod_rubro: record.rubro ? parseIntSafe(record.rubro) : null,
+                    cod_subrubro: record.subrubro ? parseIntSafe(record.subrubro) : null,
+                    impuesto_interno: parseNumeric(record.impuesto_interno)
+                };
+                
+                // Construir la query de actualización
+                const updateFields = [];
+                const updateValues = [];
+                
+                if (valores.cod_interno !== null) {
+                    updateFields.push('COD_INTERNO = ?');
+                    updateValues.push(valores.cod_interno);
+                }
+                if (valores.art_desc_vta !== null) {
+                    updateFields.push('art_desc_vta = ?');
+                    updateValues.push(valores.art_desc_vta);
+                }
+                if (valores.marca !== null) {
+                    updateFields.push('marca = ?');
+                    updateValues.push(valores.marca);
+                }
+                updateFields.push('PRECIO = ?');
+                updateValues.push(valores.precio);
+                updateFields.push('STOCK = ?');
+                updateValues.push(valores.stock);
+                updateFields.push('PESABLE = ?');
+                updateValues.push(valores.pesable);
+                updateFields.push('COSTO = ?');
+                updateValues.push(valores.costo);
+                updateFields.push('COD_IVA = ?');
+                updateValues.push(valores.cod_iva);
+                updateFields.push('HABILITADO = ?');
+                updateValues.push(valores.habilitado);
+                updateFields.push('porc_impint = ?');
+                updateValues.push(valores.porc_impint);
+                updateFields.push('PRECIO_SIN_IVA = ?');
+                updateValues.push(valores.precio_sin_iva);
+                updateFields.push('PRECIO_SIN_IVA_1 = ?');
+                updateValues.push(valores.precio_sin_iva_1);
+                updateFields.push('PRECIO_SIN_IVA_2 = ?');
+                updateValues.push(valores.precio_sin_iva_2);
+                updateFields.push('PRECIO_SIN_IVA_3 = ?');
+                updateValues.push(valores.precio_sin_iva_3);
+                updateFields.push('PRECIO_SIN_IVA_4 = ?');
+                updateValues.push(valores.precio_sin_iva_4);
+                
+                // Actualizar COD_DPTO si está presente
+                if (valores.cod_dpto !== null) {
+                    updateFields.push('COD_DPTO = ?');
+                    updateValues.push(valores.cod_dpto);
+                }
+                // Actualizar COD_RUBRO si está presente
+                if (valores.cod_rubro !== null) {
+                    updateFields.push('COD_RUBRO = ?');
+                    updateValues.push(valores.cod_rubro);
+                }
+                // Actualizar COD_SUBRUBRO si está presente
+                if (valores.cod_subrubro !== null) {
+                    updateFields.push('COD_SUBRUBRO = ?');
+                    updateValues.push(valores.cod_subrubro);
+                }
+                // Actualizar impuesto_interno
+                updateFields.push('impuesto_interno = ?');
+                updateValues.push(valores.impuesto_interno);
+                
+                // Agregar el código de barra al final para el WHERE
+                updateValues.push(codigoBarra);
+                
+                const query = `
+                    UPDATE articulo 
+                    SET ${updateFields.join(', ')}
+                    WHERE CODIGO_BARRA = ?
+                `;
+                
+                const result = await executeQuery(query, updateValues, 'UPDATE_ARTICULO_MASIVO');
+                
+                if (result.affectedRows === 0) {
+                    // Si no existe el artículo, crearlo como nuevo
+                    try {
+                        // Preparar valores para el INSERT
+                        const nombreProducto = valores.art_desc_vta || 'Sin nombre';
+                        
+                        const insertQuery = `
+                            INSERT INTO articulo (
+                                CODIGO_BARRA,
+                                COD_INTERNO,
+                                art_desc_vta,
+                                NOMBRE,
+                                marca,
+                                PRECIO,
+                                STOCK,
+                                PESABLE,
+                                COSTO,
+                                COD_IVA,
+                                HABILITADO,
+                                porc_impint,
+                                PRECIO_SIN_IVA,
+                                PRECIO_SIN_IVA_1,
+                                PRECIO_SIN_IVA_2,
+                                PRECIO_SIN_IVA_3,
+                                PRECIO_SIN_IVA_4,
+                                COD_DPTO,
+                                COD_RUBRO,
+                                COD_SUBRUBRO,
+                                impuesto_interno
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        `;
+                        
+                        const insertValues = [
+                            codigoBarra,
+                            valores.cod_interno || 0,
+                            nombreProducto,
+                            nombreProducto, // NOMBRE también se llena con el mismo valor
+                            valores.marca || null,
+                            valores.precio,
+                            valores.stock,
+                            valores.pesable,
+                            valores.costo,
+                            valores.cod_iva,
+                            valores.habilitado,
+                            valores.porc_impint,
+                            valores.precio_sin_iva,
+                            valores.precio_sin_iva_1,
+                            valores.precio_sin_iva_2,
+                            valores.precio_sin_iva_3,
+                            valores.precio_sin_iva_4,
+                            valores.cod_dpto,
+                            valores.cod_rubro,
+                            valores.cod_subrubro,
+                            valores.impuesto_interno
+                        ];
+                        
+                        await executeQuery(insertQuery, insertValues, 'INSERT_ARTICULO_MASIVO');
+                        creados++;
+                        logAdmin(`✨ Artículo creado: ${codigoBarra} - ${nombreProducto}`, 'info', 'ACTUALIZACION_MASIVA');
+                        
+                        if (creados % 10 === 0) {
+                            logAdmin(`✨ ${creados} artículos creados...`, 'info', 'ACTUALIZACION_MASIVA');
+                        }
+                    } catch (insertError) {
+                        errores++;
+                        erroresDetalle.push({
+                            codigo_barra: codigoBarra,
+                            error: `Error al crear artículo: ${insertError.message}`
+                        });
+                        logAdmin(`❌ Error creando artículo ${codigoBarra}: ${insertError.message}`, 'error', 'ACTUALIZACION_MASIVA');
+                    }
+                } else {
+                    actualizados++;
+                    if (actualizados % 10 === 0) {
+                        logAdmin(`✅ ${actualizados} artículos actualizados...`, 'info', 'ACTUALIZACION_MASIVA');
+                    }
+                }
+                
+            } catch (error) {
+                errores++;
+                erroresDetalle.push({
+                    codigo_barra: record.codigo_barra || 'N/A',
+                    error: error.message
+                });
+                logAdmin(`❌ Error actualizando artículo ${record.codigo_barra || 'N/A'}: ${error.message}`, 'error', 'ACTUALIZACION_MASIVA');
+            }
+        }
+        
+        const duration = Date.now() - startTime;
+        logAdmin(`✅ Actualización masiva completada: ${actualizados} actualizados, ${creados} creados, ${errores} errores (${duration}ms)`, 'success', 'ACTUALIZACION_MASIVA');
+        
+        res.json({
+            success: true,
+            message: 'Actualización masiva completada',
+            resumen: {
+                total: records.length,
+                actualizados: actualizados,
+                creados: creados,
+                errores: errores
+            },
+            errores: erroresDetalle.length > 0 ? erroresDetalle : undefined,
+            duracion_ms: duration,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        logAdmin(`❌ Error en actualización masiva: ${error.message}`, 'error', 'ACTUALIZACION_MASIVA');
+        res.status(500).json({
+            error: 'Error procesando la actualización masiva',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
 const generarTicketHTML = asyncHandler(async (req, res) => {
     const pedidoId = req.params.id;
@@ -3058,7 +3610,7 @@ const buscarProductosNuevo = asyncHandler(async (req, res) => {
         ${precioSQL} AS precio,
         a.COD_DPTO AS categoria_id,
         COALESCE(c.NOM_CLASIF, 'Sin categoría') AS categoria,
-        COALESCE(a.STOCK, 0) AS stock,
+        CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) AS stock,
         COALESCE(a.HABILITADO, 'S') AS habilitado,
         COALESCE(a.marca, '') AS marca,
         a.COD_INTERNO AS cod_interno,
@@ -3072,6 +3624,8 @@ const buscarProductosNuevo = asyncHandler(async (req, res) => {
         OR a.CODIGO_BARRA LIKE ?
       )
       AND a.HABILITADO = 'S'
+      AND (${precioSQL}) > 0
+      AND CAST(COALESCE(a.STOCK, '0') AS UNSIGNED) > 0
       ORDER BY COALESCE(a.art_desc_vta, a.NOMBRE) ASC
       LIMIT 50
     `;
@@ -3100,12 +3654,212 @@ const buscarProductosNuevo = asyncHandler(async (req, res) => {
   }
 });
 
+// ==============================================
+// GESTIÓN DE USUARIOS (CRUD)
+// ==============================================
 
+// Listar todos los usuarios
+const listarUsuarios = asyncHandler(async (req, res) => {
+    logAdmin('Listando usuarios', 'info', 'USUARIOS');
+    
+    try {
+        const usuarios = await executeQuery(
+            'SELECT id, usuario, rol, created_at, updated_at FROM usuarios ORDER BY created_at DESC',
+            [],
+            'LISTAR_USUARIOS'
+        );
 
+        logAdmin(`✅ ${usuarios.length} usuarios listados`, 'success', 'USUARIOS');
+        res.json({
+            usuarios: usuarios,
+            total: usuarios.length,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error listando usuarios: ${error.message}`, 'error', 'USUARIOS');
+        res.status(500).json({ 
+            message: 'Error al listar usuarios',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Crear nuevo usuario
+const crearUsuario = asyncHandler(async (req, res) => {
+    const { usuario, password, rol } = req.body;
+    
+    logAdmin(`Creando usuario: ${usuario}`, 'info', 'USUARIOS');
+    
+    // Validaciones
+    if (!usuario || !password || !rol) {
+        return res.status(400).json({ 
+            message: 'Usuario, contraseña y rol son requeridos',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    if (rol !== 'admin' && rol !== 'kiosco') {
+        return res.status(400).json({ 
+            message: 'Rol debe ser "admin" o "kiosco"',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Verificar si el usuario ya existe
+        const usuariosExistentes = await executeQuery(
+            'SELECT id FROM usuarios WHERE usuario = ?',
+            [usuario],
+            'VERIFICAR_USUARIO'
+        );
+
+        if (usuariosExistentes && usuariosExistentes.length > 0) {
+            logAdmin(`Usuario ${usuario} ya existe`, 'warn', 'USUARIOS');
+            return res.status(409).json({ 
+                message: 'El usuario ya existe',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // Hashear contraseña
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Crear usuario
+        const resultado = await executeQuery(
+            'INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?)',
+            [usuario, hashedPassword, rol],
+            'CREAR_USUARIO'
+        );
+
+        logAdmin(`✅ Usuario ${usuario} creado exitosamente (ID: ${resultado.insertId})`, 'success', 'USUARIOS');
+        
+        res.status(201).json({
+            message: 'Usuario creado exitosamente',
+            usuario: {
+                id: resultado.insertId,
+                usuario: usuario,
+                rol: rol
+            },
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error creando usuario: ${error.message}`, 'error', 'USUARIOS');
+        res.status(500).json({ 
+            message: 'Error al crear usuario',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Actualizar contraseña de usuario
+const actualizarPasswordUsuario = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { password } = req.body;
+    
+    logAdmin(`Actualizando contraseña del usuario ID: ${id}`, 'info', 'USUARIOS');
+    
+    if (!password) {
+        return res.status(400).json({ 
+            message: 'La contraseña es requerida',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    try {
+        // Verificar que el usuario existe
+        const usuarios = await executeQuery(
+            'SELECT id FROM usuarios WHERE id = ?',
+            [id],
+            'VERIFICAR_USUARIO_ID'
+        );
+
+        if (!usuarios || usuarios.length === 0) {
+            return res.status(404).json({ 
+                message: 'Usuario no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // Hashear nueva contraseña
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Actualizar contraseña
+        await executeQuery(
+            'UPDATE usuarios SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [hashedPassword, id],
+            'ACTUALIZAR_PASSWORD'
+        );
+
+        logAdmin(`✅ Contraseña actualizada para usuario ID: ${id}`, 'success', 'USUARIOS');
+        
+        res.json({
+            message: 'Contraseña actualizada exitosamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error actualizando contraseña: ${error.message}`, 'error', 'USUARIOS');
+        res.status(500).json({ 
+            message: 'Error al actualizar contraseña',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Eliminar usuario
+const eliminarUsuario = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    logAdmin(`Eliminando usuario ID: ${id}`, 'info', 'USUARIOS');
+    
+    try {
+        // Verificar que el usuario existe
+        const usuarios = await executeQuery(
+            'SELECT id, usuario FROM usuarios WHERE id = ?',
+            [id],
+            'VERIFICAR_USUARIO_ID'
+        );
+
+        if (!usuarios || usuarios.length === 0) {
+            return res.status(404).json({ 
+                message: 'Usuario no encontrado',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const usuarioEliminado = usuarios[0];
+
+        // Eliminar usuario
+        await executeQuery(
+            'DELETE FROM usuarios WHERE id = ?',
+            [id],
+            'ELIMINAR_USUARIO'
+        );
+
+        logAdmin(`✅ Usuario ${usuarioEliminado.usuario} (ID: ${id}) eliminado`, 'success', 'USUARIOS');
+        
+        res.json({
+            message: 'Usuario eliminado exitosamente',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logAdmin(`❌ Error eliminando usuario: ${error.message}`, 'error', 'USUARIOS');
+        res.status(500).json({ 
+            message: 'Error al eliminar usuario',
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
 module.exports = {
     // Autenticación y configuración
     loginCheck,
+    verificarAdmin,
+    
+    // Gestión de usuarios (CRUD)
+    listarUsuarios,
+    crearUsuario,
+    actualizarPasswordUsuario,
+    eliminarUsuario,
     login, // Alias para compatibilidad
     obtenerConfig,
     saveConfig,
@@ -3162,5 +3916,8 @@ module.exports = {
     eliminarArticuloLiquidacion,
     getPrecioCalculadoSQL,
     generarTicketHTML,
-    buscarProductosNuevo
+    buscarProductosNuevo,
+    
+    // Actualización masiva
+    actualizarArticulosDesdeJSON
 };
