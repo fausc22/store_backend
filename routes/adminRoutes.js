@@ -1,6 +1,7 @@
 
 const express = require('express');
 const adminController = require('../controllers/adminController');
+const adminPromoCouponController = require('../controllers/adminPromoCouponController');
 const imagenController = require('../controllers/imagenController');
 const horariosController = require('../controllers/horariosController');
 const router = express.Router();
@@ -26,6 +27,22 @@ router.post('/login', adminController.login); // Alias para compatibilidad
 router.get('/getConfig', adminController.obtenerConfig);
 router.post('/saveConfig', adminController.saveConfig);
 router.get('/variablesenv', adminController.variablesEnv);
+
+// ==============================================
+// RUTAS FASE 3: REGLAS DE PROMO Y CUPONES (admin)
+// ==============================================
+router.get('/promo-rules', adminController.verificarAdmin, adminPromoCouponController.listPromoRules);
+router.post('/promo-rules', adminController.verificarAdmin, adminPromoCouponController.createPromoRule);
+router.put('/promo-rules/:id', adminController.verificarAdmin, adminPromoCouponController.updatePromoRule);
+router.delete('/promo-rules/:id', adminController.verificarAdmin, adminPromoCouponController.deletePromoRule);
+router.put('/promo-rules/:id/toggle', adminController.verificarAdmin, adminPromoCouponController.togglePromoRule);
+
+router.get('/coupons', adminController.verificarAdmin, adminPromoCouponController.listCoupons);
+router.post('/coupons', adminController.verificarAdmin, adminPromoCouponController.createCoupon);
+router.put('/coupons/:id', adminController.verificarAdmin, adminPromoCouponController.updateCoupon);
+router.delete('/coupons/:id', adminController.verificarAdmin, adminPromoCouponController.deleteCoupon);
+router.put('/coupons/:id/toggle', adminController.verificarAdmin, adminPromoCouponController.toggleCoupon);
+router.get('/coupons/:id/redemptions', adminController.verificarAdmin, adminPromoCouponController.getCouponRedemptions);
 
 // ==============================================
 // RUTAS DE GESTIÓN DE USUARIOS (CRUD)

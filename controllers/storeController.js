@@ -1,6 +1,7 @@
 // controllers/storeController.js - VERSIÓN OPTIMIZADA
-const { executeQuery, logConnection } = require('./dbPS');
+const { executeQuery, logConnection, pool } = require('./dbPS');
 const axios = require('axios');
+const pricingService = require('../services/pricingService');
 const mercadopago = require('mercadopago');
 const path = require('path');
 const fs = require('fs');
@@ -1336,7 +1337,8 @@ const calculateShipping = asyncHandler(async (req, res) => {
             });
         }
 
-        const validResults = response.data.results.map(result => {
+        const maxKm = parseFloat(process.env.STORE_DELIVERY_MAX_KM) || 0;
+        let validResults = response.data.results.map(result => {
             const { lat, lng } = result.geometry;
             const distance = getDistanceFromLatLonInKm(storeCoordinates.lat, storeCoordinates.lng, lat, lng);
             const shippingCost = calculateShippingCost(distance);
@@ -1347,6 +1349,15 @@ const calculateShipping = asyncHandler(async (req, res) => {
                 confidence: result.confidence
             };
         });
+        if (maxKm > 0) {
+            validResults = validResults.filter(r => r.distance <= maxKm);
+        }
+        if (validResults.length === 0) {
+            return res.status(400).json({
+                error: `Dirección fuera de la zona de entrega (máximo ${maxKm} km). Seleccioná otra.`,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         const duration = Date.now() - startTime;
         logController(`✅ Envío calculado para "${address}" (${duration}ms): ${validResults.length} resultados`, 'success', 'SHIPPING');
@@ -1410,12 +1421,73 @@ const client = new mercadopago.MercadoPagoConfig({
 });
 const nombreTiendaMP = process.env.STORE_NAME || 'MercadoPago';
 
+// ==============================================
+// FASE 3: Quote y validación de cupones (store)
+// ==============================================
+
+const couponService = require('../services/couponService');
+const promoRulesService = require('../services/promoRulesService');
+
+/** GET /store/promo-rules/summary - Resumen para checkout: monto mínimo para envío gratis. */
+const promoRulesSummary = asyncHandler(async (req, res) => {
+    try {
+        const envioGratisDesde = await promoRulesService.getEnvioGratisDesde();
+        return res.json({ envioGratisDesde: envioGratisDesde != null ? Number(envioGratisDesde) : null });
+    } catch (err) {
+        logController(`promo summary error: ${err.message}`, 'warn', 'PROMO');
+        return res.json({ envioGratisDesde: null });
+    }
+});
+
+/** POST /store/pricing/quote - Presupuesto sin persistir (reglas + cupón). */
+const pricingQuote = asyncHandler(async (req, res) => {
+    const { productos, deliveryOption, address, cuponCodigo } = req.body;
+    if (!productos || !Array.isArray(productos) || productos.length === 0) {
+        return res.status(400).json({ error: 'productos es requerido y debe ser un array no vacío', timestamp: new Date().toISOString() });
+    }
+    try {
+        const quote = await pricingService.getQuote({
+            productos,
+            deliveryOption: deliveryOption || 'delivery',
+            address: address || '',
+            cuponCodigo: cuponCodigo || '',
+        });
+        return res.json(quote);
+    } catch (err) {
+        logController(`Quote error: ${err.message}`, 'warn', 'QUOTE');
+        return res.status(400).json({
+            error: err.message || 'Error al calcular el presupuesto',
+            timestamp: new Date().toISOString(),
+        });
+    }
+});
+
+/** POST /store/coupons/validate - Valida cupón para un subtotal (respuesta sin datos internos). */
+const validateCouponStore = asyncHandler(async (req, res) => {
+    const { codigo, subtotal } = req.body;
+    const sub = parseFloat(subtotal);
+    if (!codigo || (subtotal != null && (isNaN(sub) || sub < 0))) {
+        return res.status(400).json({
+            valid: false,
+            message: 'Código y subtotal (número >= 0) son requeridos',
+            timestamp: new Date().toISOString(),
+        });
+    }
+    const result = await couponService.validateCoupon(codigo, sub);
+    return res.json({
+        valid: result.valid,
+        montoDescuento: result.valid ? result.montoDescuento : undefined,
+        message: result.message,
+        timestamp: new Date().toISOString(),
+    });
+});
+
+// Fase 3: El total debe provenir del quote (POST /store/pricing/quote). createPreference cobra ese total (unit_price = total).
 const createPreference = asyncHandler(async (req, res) => {
-    const { total } = req.body;
-    
-    logController(`Creando preferencia MercadoPago - Total: ${total}`, 'info', 'MERCADOPAGO');
-    
-    if (!total || isNaN(total) || total <= 0) {
+    const { total, items } = req.body;
+    const totalNum = Number(total);
+    logController(`Creando preferencia MercadoPago - Total: ${totalNum}`, 'info', 'MERCADOPAGO');
+    if (total == null || isNaN(totalNum) || totalNum <= 0) {
         return res.status(400).json({
             error: 'Total inválido para el pago',
             timestamp: new Date().toISOString()
@@ -1428,8 +1500,7 @@ const createPreference = asyncHandler(async (req, res) => {
                 {
                     title: `Compra de ${nombreTiendaMP}`,
                     quantity: 1,
-                    //unit_price: Number(total),  
-                    unit_price: 1,
+                    unit_price: totalNum,
                     currency_id: "ARS"
                 }
             ],
@@ -1457,7 +1528,7 @@ const createPreference = asyncHandler(async (req, res) => {
         const preference = new mercadopago.Preference(client);
         const result = await preference.create({ body });
         
-        logController(`✅ Preferencia MercadoPago creada: ${result.id} - ${total}`, 'success', 'MERCADOPAGO');
+        logController(`✅ Preferencia MercadoPago creada: ${result.id} - $${totalNum}`, 'success', 'MERCADOPAGO');
         
         res.json({
             id: result.id,
@@ -1480,25 +1551,49 @@ const createPreference = asyncHandler(async (req, res) => {
 // ==============================================
 
 const nuevoPedido = asyncHandler(async (req, res) => {
-    const { 
-        cliente, 
-        direccion_cliente, 
-        telefono_cliente, 
-        email_cliente, 
-        cantidad_productos, 
-        monto_total, 
-        costo_envio, 
-        medio_pago, 
-        estado, 
-        notas_local, 
-        productos 
+    const idempotencyKey = (req.headers['idempotency-key'] || req.body?.idempotencyKey || req.body?.IdempotencyKey || '').trim();
+    if (idempotencyKey) {
+        try {
+            const existing = await executeQuery(
+                'SELECT pedido_id FROM pedidos_idempotency WHERE idempotency_key = ? LIMIT 1',
+                [idempotencyKey],
+                'IDEMPOTENCY_CHECK'
+            );
+            if (existing && existing.length > 0) {
+                const existingPedidoId = existing[0].pedido_id;
+                logController(`Idempotencia: clave ya usada, devolviendo pedido_id ${existingPedidoId}`, 'info', 'PEDIDOS');
+                return res.status(200).json({
+                    success: true,
+                    message: 'Pedido ya registrado',
+                    pedido_id: existingPedidoId,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        } catch (err) {
+            logController(`Idempotency check falló: ${err.message}`, 'warn', 'PEDIDOS');
+        }
+    }
+
+    const {
+        cliente,
+        direccion_cliente,
+        telefono_cliente,
+        email_cliente,
+        cantidad_productos,
+        monto_total,
+        costo_envio,
+        medio_pago,
+        estado,
+        notas_local,
+        productos,
+        cuponCodigo,
+        deliveryOption
     } = req.body;
 
     logController(`Creando nuevo pedido para: ${cliente}`, 'info', 'PEDIDOS');
 
-    // Validaciones
     if (!cliente || !direccion_cliente || !telefono_cliente || !email_cliente || !productos || productos.length === 0) {
-        return res.status(400).json({ 
+        return res.status(400).json({
             error: 'Datos incompletos del pedido',
             required: ['cliente', 'direccion_cliente', 'telefono_cliente', 'email_cliente', 'productos'],
             timestamp: new Date().toISOString()
@@ -1506,124 +1601,147 @@ const nuevoPedido = asyncHandler(async (req, res) => {
     }
 
     try {
-        // ✅ VALIDAR Y NORMALIZAR productos antes de insertar
         const productosNormalizados = productos.map(producto => ({
             codigo_barra: producto.codigo_barra || '',
-            cod_interno: producto.cod_interno || producto.codInterno || 0, // ✅ Normalizar aquí
+            cod_interno: producto.cod_interno || producto.codInterno || 0,
             nombre_producto: producto.nombre_producto || '',
             cantidad: producto.cantidad || 1,
             precio: producto.precio || 0
         }));
 
-        // ✅ VALIDACIÓN DE STOCK - Verificar disponibilidad ANTES de crear pedido
+        const deliveryOpt = deliveryOption || (direccion_cliente && String(direccion_cliente).toLowerCase().includes('retiro') ? 'local' : 'delivery');
+        let quote;
+        try {
+            quote = await pricingService.getQuote({
+                productos: productosNormalizados,
+                deliveryOption: deliveryOpt,
+                address: direccion_cliente || '',
+                cuponCodigo: cuponCodigo || ''
+            });
+        } catch (quoteError) {
+            logController(`❌ Quote: ${quoteError.message}`, 'warn', 'PEDIDOS');
+            return res.status(400).json({
+                error: quoteError.message || 'Error al calcular el presupuesto (revisá cupón y datos)',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const montoRecibido = parseFloat(monto_total);
+        if (isNaN(montoRecibido) || Math.abs(montoRecibido - quote.total) > 0.01) {
+            logController(`❌ Total no coincide: recibido=${montoRecibido}, quote=${quote.total}`, 'warn', 'PEDIDOS');
+            return res.status(400).json({
+                error: 'El total no coincide con el carrito. Recalculá en la tienda y volvé a intentar.',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        const calculatedItems = quote.items;
         console.log('🔍 [PEDIDO] Validando stock de productos...');
         const stockIssues = [];
-
-        for (const producto of productosNormalizados) {
-            if (producto.cod_interno && producto.cod_interno > 0) {
-                const stockQuery = `
-                    SELECT COD_INTERNO, art_desc_vta, STOCK, STOCK_MIN
-                    FROM articulo
-                    WHERE COD_INTERNO = ?
-                    AND HABILITADO = 'S'
-                `;
-
+        for (const item of calculatedItems) {
+            if (item.cod_interno && item.cod_interno > 0) {
                 try {
-                    const stockResult = await executeQuery(stockQuery, [producto.cod_interno], 'CHECK_STOCK');
-
+                    const stockResult = await executeQuery(
+                        'SELECT COD_INTERNO, art_desc_vta, STOCK FROM articulo WHERE COD_INTERNO = ? AND HABILITADO = ?',
+                        [item.cod_interno, 'S'],
+                        'CHECK_STOCK'
+                    );
                     if (stockResult.length === 0) {
-                        stockIssues.push({
-                            producto: producto.nombre_producto,
-                            problema: 'Producto no encontrado o deshabilitado'
-                        });
+                        stockIssues.push({ producto: item.nombre_producto, problema: 'Producto no encontrado o deshabilitado' });
                     } else {
-                        const stockDisponible = stockResult[0].STOCK;
-                        const cantidadSolicitada = producto.cantidad;
-
-                        console.log(`📊 Stock de "${producto.nombre_producto}": ${stockDisponible} disponibles, ${cantidadSolicitada} solicitados`);
-
-                        if (stockDisponible < cantidadSolicitada) {
+                        const stockDisponible = parseInt(stockResult[0].STOCK, 10) || 0;
+                        if (stockDisponible < item.cantidad) {
                             stockIssues.push({
-                                producto: producto.nombre_producto,
-                                problema: `Stock insuficiente (disponible: ${stockDisponible}, solicitado: ${cantidadSolicitada})`
+                                producto: item.nombre_producto,
+                                problema: `Stock insuficiente (disponible: ${stockDisponible}, solicitado: ${item.cantidad})`
                             });
                         }
                     }
                 } catch (stockError) {
-                    console.error(`❌ Error verificando stock de ${producto.nombre_producto}:`, stockError);
-                    // Continuar sin bloquear el pedido si falla la verificación de stock
+                    console.error(`❌ Error verificando stock:`, stockError.message);
                 }
             }
         }
+        if (stockIssues.length > 0) console.warn('⚠️ [PEDIDO] Advertencias de stock:', stockIssues);
 
-        // Si hay problemas de stock, devolver advertencia (no bloquear pedido completamente)
-        if (stockIssues.length > 0) {
-            console.warn('⚠️ [PEDIDO] Advertencias de stock detectadas:', stockIssues);
-            // Por ahora solo loguear, no bloquear el pedido
-            // En el futuro, puedes cambiar esto a:
-            // return res.status(400).json({
-            //     error: 'Stock insuficiente',
-            //     issues: stockIssues
-            // });
-        }
+        const cantidadProductos = calculatedItems.reduce((sum, i) => sum + i.cantidad, 0);
+        const cuponCodigoStored = quote.couponId ? (couponService.normalizeCodigo(cuponCodigo) || null) : null;
+        const pricingSnapshotJson = quote.pricing_snapshot ? JSON.stringify(quote.pricing_snapshot) : null;
 
-        // ✅ LOG para debugging
-        if (process.env.NODE_ENV === 'development') {
-            logController(`📦 Productos normalizados:`, 'info', 'PEDIDOS');
-            console.log(JSON.stringify(productosNormalizados, null, 2));
-        }
-
-        // Insertar pedido principal
         const insertPedidoQuery = `
-            INSERT INTO pedidos (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, medio_pago, estado, notas_local)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pedidos (fecha, cliente, direccion_cliente, telefono_cliente, email_cliente, cantidad_productos, monto_total, costo_envio, subtotal_productos, monto_descuento, cupon_codigo, cupon_id, regla_aplicada_id, pricing_snapshot, medio_pago, estado, notas_local)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const pedidoValues = [
             cliente,
             direccion_cliente,
             telefono_cliente,
             email_cliente,
-            cantidad_productos,
-            monto_total,
-            costo_envio,
+            cantidadProductos,
+            quote.total,
+            quote.shipping,
+            quote.subtotal,
+            quote.discountRule + quote.discountCoupon,
+            cuponCodigoStored,
+            quote.couponId || null,
+            quote.reglaAplicadaId || null,
+            pricingSnapshotJson,
             medio_pago || 'No especificado',
             estado || 'pendiente',
             notas_local
         ];
+
+        if (quote.couponId) {
+            const conn = await pool.getConnection();
+            try {
+                await conn.beginTransaction();
+                const [insertPedido] = await conn.execute(insertPedidoQuery, pedidoValues);
+                const pedidoId = insertPedido.insertId;
+                if (calculatedItems && calculatedItems.length > 0) {
+                    const valuePlaceholders = calculatedItems.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+                    const insertProductoQuery = `INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio) VALUES ${valuePlaceholders}`;
+                    const flattened = calculatedItems.reduce((acc, item) => {
+                        acc.push(pedidoId, item.codigo_barra, item.cod_interno, item.nombre_producto, item.cantidad, item.precio);
+                        return acc;
+                    }, []);
+                    await conn.execute(insertProductoQuery, flattened);
+                }
+                await couponService.redeemCoupon(quote.couponId, pedidoId, quote.discountCoupon, conn);
+                if (idempotencyKey) {
+                    await conn.execute('INSERT INTO pedidos_idempotency (idempotency_key, pedido_id) VALUES (?, ?)', [idempotencyKey, pedidoId]);
+                }
+                await conn.commit();
+                logController(`✅ Pedido creado (con cupón) - ID: ${pedidoId}, Cliente: ${cliente}`, 'success', 'PEDIDOS');
+                return res.json({ success: true, message: 'Pedido creado correctamente', pedido_id: pedidoId, timestamp: new Date().toISOString() });
+            } catch (txError) {
+                await conn.rollback();
+                throw txError;
+            } finally {
+                conn.release();
+            }
+        }
+
         const pedidoResult = await executeQuery(insertPedidoQuery, pedidoValues, 'INSERT_PEDIDO');
         const pedidoId = pedidoResult.insertId;
-
-        // ✅ INSERTAR PRODUCTOS - Usar productosNormalizados
-        if (productosNormalizados && productosNormalizados.length > 0) {
-            const valuePlaceholders = productosNormalizados.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
-            
+        if (calculatedItems && calculatedItems.length > 0) {
+            const valuePlaceholders = calculatedItems.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
             const insertProductoQuery = `
                 INSERT INTO pedidos_contenido (id_pedido, codigo_barra, cod_interno, nombre_producto, cantidad, precio)
                 VALUES ${valuePlaceholders}
             `;
-
-            const flattenedProductosValues = productosNormalizados.reduce((acc, producto) => {
-                acc.push(
-                    pedidoId,
-                    producto.codigo_barra,
-                    producto.cod_interno,  // ✅ Ya normalizado
-                    producto.nombre_producto,
-                    producto.cantidad,
-                    producto.precio
-                );
+            const flattenedProductosValues = calculatedItems.reduce((acc, item) => {
+                acc.push(pedidoId, item.codigo_barra, item.cod_interno, item.nombre_producto, item.cantidad, item.precio);
                 return acc;
             }, []);
-
-            // ✅ LOG de valores finales antes de insertar
-            if (process.env.NODE_ENV === 'development') {
-                logController(`📝 Valores para inserción:`, 'info', 'PEDIDOS');
-                console.log('Query:', insertProductoQuery);
-                console.log('Values:', flattenedProductosValues);
-            }
-
             await executeQuery(insertProductoQuery, flattenedProductosValues, 'INSERT_PRODUCTOS_PEDIDO');
         }
-
+        if (idempotencyKey) {
+            await executeQuery(
+                'INSERT INTO pedidos_idempotency (idempotency_key, pedido_id) VALUES (?, ?)',
+                [idempotencyKey, pedidoId],
+                'INSERT_IDEMPOTENCY'
+            );
+        }
         logController(`✅ Pedido creado exitosamente - ID: ${pedidoId}, Cliente: ${cliente}`, 'success', 'PEDIDOS');
         res.json({ success: true, message: 'Pedido creado correctamente', pedido_id: pedidoId, timestamp: new Date().toISOString() });
     } catch (error) {
@@ -1648,6 +1766,7 @@ const variablesEnv = (req, res) => {
         storeEmail: process.env.STORE_EMAIL,
         storeDeliveryBase: process.env.STORE_DELIVERY_BASE,
         storeDeliveryKm: process.env.STORE_DELIVERY_KM,
+        storeDeliveryMaxKm: process.env.STORE_DELIVERY_MAX_KM || '0',
         iva: process.env.IVA,
         pageStatus: process.env.PAGE_STATUS
     };
@@ -2215,6 +2334,7 @@ const searchWithOpenCage = async (query, country, limit, options = {}) => {
         { timeout: 8000 }
     );
 
+    const maxKm = parseFloat(process.env.STORE_DELIVERY_MAX_KM) || 0;
     if (response.data.results && response.data.results.length > 0) {
         return response.data.results.map((result) => {
             const { lat, lng } = result.geometry;
@@ -2225,14 +2345,15 @@ const searchWithOpenCage = async (query, country, limit, options = {}) => {
                 lng
             );
             const shippingCost = calculateShippingCost(distance);
-            
+            const outOfRange = maxKm > 0 && distance > maxKm;
             return {
                 formatted: result.formatted,
                 distance,
                 shippingCost,
                 confidence: result.confidence,
                 components: result.components,
-                coordinates: { lat, lng }
+                coordinates: { lat, lng },
+                outOfRange
             };
         });
     }
@@ -2699,6 +2820,9 @@ module.exports = {
     enviarCarrito,
     obtenerCarrito,
     calculateShipping,
+    promoRulesSummary,
+    pricingQuote,
+    validateCouponStore,
     createPreference,
     variablesEnv,
     MailPedidoRealizado,
@@ -2715,5 +2839,7 @@ module.exports = {
     
     reverseGeocode,
     verificarHorarioTienda,
+    estadoHorarioSimple
+};
     estadoHorarioSimple
 };

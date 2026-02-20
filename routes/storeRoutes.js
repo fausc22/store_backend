@@ -46,8 +46,11 @@ router.get('/articulosCheckout', storeController.articulosCheckout);
 router.post('/cart', storeController.enviarCarrito);
 router.get('/cart', storeController.obtenerCarrito);
 
-// Cálculo de envío y pagos
+// Cálculo de envío y pagos (Fase 3: quote es la fuente de total)
 router.post('/calculateShipping', storeController.calculateShipping);
+router.get('/promo-rules/summary', storeController.promoRulesSummary);
+router.post('/pricing/quote', storeController.pricingQuote);
+router.post('/coupons/validate', storeController.validateCouponStore);
 router.post('/create_preference', storeController.createPreference);
 
 // Pedidos

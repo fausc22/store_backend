@@ -214,6 +214,7 @@ const obtenerConfig = asyncHandler(async (req, res) => {
             storeEmail: config.STORE_EMAIL,
             storeDeliveryBase: config.STORE_DELIVERY_BASE,
             storeDeliveryKm: config.STORE_DELIVERY_KM,
+            storeDeliveryMaxKm: config.STORE_DELIVERY_MAX_KM || '0',
             mercadoPagoToken: config.MERCADOPAGO_ACCESS_TOKEN,
             iva: config.IVA,
             pageStatus: config.PAGE_STATUS,
@@ -260,6 +261,7 @@ const saveConfig = asyncHandler(async (req, res) => {
             ...(config.storeEmail && { STORE_EMAIL: config.storeEmail }),
             ...(config.storeDeliveryBase && { STORE_DELIVERY_BASE: config.storeDeliveryBase }),
             ...(config.storeDeliveryKm && { STORE_DELIVERY_KM: config.storeDeliveryKm }),
+            ...(config.hasOwnProperty('storeDeliveryMaxKm') && { STORE_DELIVERY_MAX_KM: String(config.storeDeliveryMaxKm ?? '0') }),
             ...(config.mercadoPagoToken && { MERCADOPAGO_ACCESS_TOKEN: config.mercadoPagoToken }),
             ...(config.iva && { IVA: config.iva }),
             ...(config.pageStatus && { PAGE_STATUS: config.pageStatus }),
@@ -298,6 +300,9 @@ const saveConfig = asyncHandler(async (req, res) => {
         }
         if (config.storeDeliveryKm) {
             process.env.STORE_DELIVERY_KM = config.storeDeliveryKm;
+        }
+        if (config.hasOwnProperty('storeDeliveryMaxKm')) {
+            process.env.STORE_DELIVERY_MAX_KM = String(config.storeDeliveryMaxKm ?? '0');
         }
         if (config.mercadoPagoToken) {
             process.env.MERCADOPAGO_ACCESS_TOKEN = config.mercadoPagoToken;
@@ -2220,6 +2225,7 @@ const variablesEnv = (req, res) => {
         storeEmail: process.env.STORE_EMAIL,
         storeDeliveryBase: process.env.STORE_DELIVERY_BASE,
         storeDeliveryKm: process.env.STORE_DELIVERY_KM,
+        storeDeliveryMaxKm: process.env.STORE_DELIVERY_MAX_KM || '0',
         iva: process.env.IVA,
         pageStatus: process.env.PAGE_STATUS,
         sessionSecret: process.env.SESSION_SECRET,
